@@ -1,0 +1,8 @@
+experiment_name: llama32_1b_sae_feature_sweep
+base_config: configs/steer_llama32_1b.yaml
+sweep:
+  parameter: steering.feature_indices
+  values:
+    - [12345]
+    - [23456]
+    - [34567]

@@ -1,0 +1,5 @@
+experiment_name: llama32_1b_sae_strength_sweep
+base_config: configs/steer_llama32_1b.yaml
+sweep:
+  parameter: steering.strength
+  values: [1.0, 3.0, 5.0, 10.0]
