@@ -17,7 +17,7 @@ dependencies = [
   "transformers>=4.45",
   "accelerate>=0.33",
   "safetensors>=0.4",
-  "sparsify",
+  "eai-sparsify",
 ]
 
 [tool.setuptools]
