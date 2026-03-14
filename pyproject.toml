@@ -18,6 +18,7 @@ dependencies = [
   "accelerate>=0.33",
   "safetensors>=0.4",
   "eai-sparsify",
+  "datasets>=2.20",
 ]
 
 [tool.setuptools]
