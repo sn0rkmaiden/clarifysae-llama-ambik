@@ -25,7 +25,7 @@ batching:
 
 dataset:
   path: data/raw/ambik/ambik_test_400.csv
-  limit: 2
+  limit: null
 
 output:
   root_dir: outputs

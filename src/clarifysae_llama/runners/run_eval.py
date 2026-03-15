@@ -79,22 +79,26 @@ def run_eval(config: dict) -> None:
                 user_intent=row['user_intent'],
             )
             prediction_rows.append({
-                'id': row['id'],
-                'ambiguity_type': row['ambiguity_type'],
-                'user_intent': row['user_intent'],
-                'prompt': row['prompt'],
-                'prediction_text': prediction,
-                **metrics,
-            })
+            'id': row['id'],
+            'user_intent': row['user_intent'],
+            'prompt': row['prompt'],
+            **metrics,
+        })
 
     predictions_path = pred_dir / 'predictions.jsonl'
     write_jsonl(predictions_path, prediction_rows)
 
     raw_df = pd.DataFrame(prediction_rows)
-    example_metrics = raw_df[[
-        'id', 'ambiguity_type', 'prediction_text', 'SR', 'help_rate', 'correct_help_rate'
-    ]].rename(columns={'ambiguity_type': 'y_amb_type'})
-    agg = aggregate_metrics(raw_df.rename(columns={'ambiguity_type': 'y_amb_type'}))
+
+    example_metrics = raw_df[
+        ['id', 'y_amb_type', 'prediction_text', 'SR', 'help_rate', 'correct_help_rate']
+    ].copy()
+
+    agg_input = raw_df[
+        ['y_amb_type', 'SR', 'help_rate', 'correct_help_rate']
+    ].copy()
+
+    agg = aggregate_metrics(agg_input)
     save_metric_tables(example_metrics, agg, run_dir)
 
     log_run(root_dir / 'logs' / 'runs.jsonl', {
