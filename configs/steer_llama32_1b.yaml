@@ -22,7 +22,7 @@ steering:
   method: sparsify
   sae_repo: EleutherAI/sae-Llama-3.2-1B-131k
   hookpoint: layers.10
-  feature_indices: [12345]  # replace with a real feature id
+  feature_indices: [12345] 
   strength: 5.0
   mode: additive
   apply_to: all_positions

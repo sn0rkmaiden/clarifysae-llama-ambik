@@ -76,8 +76,8 @@ Each run writes into `outputs/`:
 
 ## Feature discovery with C / Q vocabularies
 
-The repo now includes a separate discovery runner for computing generic vocab-based
-feature scores using the same **HF + eai-sparsify** stack as the steering code.
+The repo includes a discovery runner for computing generic vocab-based
+feature scores.
 
 Expected vocabulary format:
 - JSON list of strings, for example `["?", " clarify", " which"]`
@@ -100,12 +100,11 @@ Outputs are written under:
 Notes:
 - Replace the example vocab paths with your real C and Q vocab files.
 - This runner computes a generic vocab score from positive-token activation minus background activation, with an entropy term across vocab groups.
-- It is designed to replace the old TransformerLens + sae_lens extraction path for this repo.
 
 
 ## OutputScores
 
-The repo now also includes an OutputScore runner in the same HF + `eai-sparsify` stack.
+The repo includes an OutputScore runner.
 It is intended to mirror the old two-stage workflow:
 1. discover C / Q features from vocab scores
 2. select top features from a score file
@@ -133,7 +132,7 @@ Notes:
 
 ## Inspecting / merging score tables
 
-The repo also includes a small inspection utility for merging C / Q / OutputScore tables.
+The repo includes a small inspection utility for merging C / Q / OutputScore tables.
 
 Example config:
 - `configs/discovery/inspect_scores.yaml`
