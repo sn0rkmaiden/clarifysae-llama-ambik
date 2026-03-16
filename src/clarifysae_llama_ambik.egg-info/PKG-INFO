@@ -13,6 +13,7 @@ Requires-Dist: transformers>=4.45
 Requires-Dist: accelerate>=0.33
 Requires-Dist: safetensors>=0.4
 Requires-Dist: eai-sparsify
+Requires-Dist: datasets>=2.20
 
 # clarifysae-llama-ambik
 
@@ -88,3 +89,79 @@ Each run writes into `outputs/`:
 - The steered config ships with a placeholder feature index. Replace it with a real one before running.
 - Hookpoint-to-module mapping is implemented for Llama-style architectures and can be extended later.
 - The runner starts with the `no_help` setup because it is the cleanest path for Phase 1 replication.
+
+
+## Feature discovery with C / Q vocabularies
+
+The repo now includes a separate discovery runner for computing generic vocab-based
+feature scores using the same **HF + eai-sparsify** stack as the steering code.
+
+Expected vocabulary format:
+- JSON list of strings, for example `["?", " clarify", " which"]`
+- or JSON dict from a label to one or more string variants
+
+Example config:
+- `configs/discovery/discover_llama32_1b_vocab_scores.yaml`
+
+Run it with:
+
+```bash
+python -m clarifysae_llama.runners.discover_features --config configs/discovery/discover_llama32_1b_vocab_scores.yaml
+```
+
+Outputs are written under:
+- `outputs/discovery/<experiment_name>/<vocab_name>/feature_scores.pt`
+- `outputs/discovery/<experiment_name>/<vocab_name>/feature_scores.csv`
+- `outputs/discovery/<experiment_name>/<vocab_name>/top_100_features.csv`
+
+Notes:
+- Replace the example vocab paths with your real C and Q vocab files.
+- This runner computes a generic vocab score from positive-token activation minus background activation, with an entropy term across vocab groups.
+- It is designed to replace the old TransformerLens + sae_lens extraction path for this repo.
+
+
+## OutputScores
+
+The repo now also includes an OutputScore runner in the same HF + `eai-sparsify` stack.
+It is intended to mirror the old two-stage workflow:
+1. discover C / Q features from vocab scores
+2. select top features from a score file
+3. compute `a_max` on a text corpus
+4. intervene on one feature at a time and score the output distribution
+
+Example config:
+- `configs/discovery/compute_output_scores_llama32_1b.yaml`
+
+Run it with:
+
+```bash
+python -m clarifysae_llama.runners.compute_output_scores --config configs/discovery/compute_output_scores_llama32_1b.yaml
+```
+
+Outputs are written under:
+- `outputs/discovery/<experiment_name>/output_scores/<name>/a_max.pt`
+- `outputs/discovery/<experiment_name>/output_scores/<name>/output_scores.csv`
+- `outputs/discovery/<experiment_name>/output_scores/<name>/output_scores.json`
+
+Notes:
+- `feature_scores_path` should point to a `.pt` file from vocab discovery.
+- By default the runner reads the `scores` tensor from that file.
+- You can either use `top_k_features` or provide explicit `feature_indices`.
+
+## Inspecting / merging score tables
+
+The repo also includes a small inspection utility for merging C / Q / OutputScore tables.
+
+Example config:
+- `configs/discovery/inspect_scores.yaml`
+
+Run it with:
+
+```bash
+python -m clarifysae_llama.runners.inspect_scores --config configs/discovery/inspect_scores.yaml
+```
+
+This writes:
+- `outputs/discovery/inspection/merged_scores.csv`
+
+and prints a merged table to the console.

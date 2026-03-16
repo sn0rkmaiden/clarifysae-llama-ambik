@@ -7,8 +7,17 @@ src/clarifysae_llama/backends/hf_backend.py
 src/clarifysae_llama/backends/steered_hf_backend.py
 src/clarifysae_llama/data/ambik_loader.py
 src/clarifysae_llama/data/prompting.py
+src/clarifysae_llama/discovery/__init__.py
+src/clarifysae_llama/discovery/dataset.py
+src/clarifysae_llama/discovery/output_scores.py
+src/clarifysae_llama/discovery/sae_utils.py
+src/clarifysae_llama/discovery/scoring.py
+src/clarifysae_llama/discovery/vocab.py
 src/clarifysae_llama/eval/metrics.py
 src/clarifysae_llama/eval/reporting.py
+src/clarifysae_llama/runners/compute_output_scores.py
+src/clarifysae_llama/runners/discover_features.py
+src/clarifysae_llama/runners/inspect_scores.py
 src/clarifysae_llama/runners/run_eval.py
 src/clarifysae_llama/runners/run_no_help.py
 src/clarifysae_llama/runners/sweep.py
