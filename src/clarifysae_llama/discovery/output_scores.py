@@ -12,8 +12,8 @@ from tqdm import tqdm
 
 from clarifysae_llama.discovery.dataset import load_token_chunks
 from clarifysae_llama.discovery.sae_utils import (
+    SparseLatents,
     compute_a_max_from_sparse,
-    encode_dense,
     encode_sparse,
     get_decoder_matrix,
     get_num_latents,
@@ -64,6 +64,7 @@ class SingleFeatureIntervention:
     def _hook_fn(self, module, inputs, output):
         hidden = output[0] if isinstance(output, tuple) else output
 
+        original_device = hidden.device
         original_dtype = hidden.dtype
         original_shape = hidden.shape
 
@@ -72,11 +73,30 @@ class SingleFeatureIntervention:
             dtype=self.dtype,
         )
 
-        dense_latents = encode_dense(self.sae, hidden_2d)
-        dense_latents[:, self.feature_idx] += self.steering_delta
+        sparse_latents = encode_sparse(self.sae, hidden_2d)
+        if not isinstance(sparse_latents, SparseLatents):
+            raise TypeError(
+                f"encode_sparse(...) returned {type(sparse_latents)!r}, expected SparseLatents"
+            )
 
-        recon = self.sae.decode(dense_latents).reshape(original_shape)
-        recon = recon.to(device=hidden.device, dtype=original_dtype)
+        top_acts = sparse_latents.top_acts.clone()
+        top_indices = sparse_latents.top_indices.clone()
+
+        hit_mask = top_indices == self.feature_idx
+        if hit_mask.any():
+            top_acts[hit_mask] += self.steering_delta
+
+        missing_rows = ~hit_mask.any(dim=1)
+        if missing_rows.any():
+            replacement_col = torch.argmin(top_acts[missing_rows], dim=1)
+            top_indices[missing_rows, replacement_col] = self.feature_idx
+            top_acts[missing_rows, replacement_col] = self.steering_delta
+
+        recon = self.sae.decode(top_acts, top_indices)
+        recon = recon.reshape(original_shape).to(
+            device=original_device,
+            dtype=original_dtype,
+        )
 
         if isinstance(output, tuple):
             return (recon,) + output[1:]
@@ -138,11 +158,6 @@ def compute_a_max(
     return a_max.detach().cpu()
 
 
-def _get_lm_head_weight(model) -> torch.Tensor:
-    lm_head = model.lm_head.weight
-    return lm_head.detach()
-
-
 def compute_top_tokens_for_features(
     model,
     sae,
@@ -156,7 +171,7 @@ def compute_top_tokens_for_features(
             f"Expected SAE decoder matrix to have shape [n_features, d_model], got {tuple(decoder.shape)}"
         )
 
-    lm_head = _get_lm_head_weight(model)
+    lm_head = model.lm_head.weight.detach()
     lm_head_device = lm_head.device
     lm_head_dtype = lm_head.dtype
 
