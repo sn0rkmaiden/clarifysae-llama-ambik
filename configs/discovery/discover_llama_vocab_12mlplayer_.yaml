@@ -1,0 +1,45 @@
+experiment_name: llama32_1b_vocab_discovery
+seed: 42
+
+model:
+  name: unsloth/Llama-3.2-1B-Instruct
+  backend: hf
+  torch_dtype: bfloat16
+  device_map: auto
+
+# This runner computes generic vocab-based feature scores.
+# Point the vocabulary paths at your C and Q JSON files.
+discovery:
+  sae_repo: EleutherAI/sae-Llama-3.2-1B-131k
+  hookpoint: layers.12.mlp
+
+  vocab_paths:
+    C: data/vocabs/clarifying_vocab.json
+    Q: data/vocabs/question_vocab.json
+
+  dataset:
+    source: huggingface
+    name: Skylion007/openwebtext
+    split: train
+    text_column: text
+    streaming: true
+    n_texts: 4096
+
+  tokenization:
+    max_length: 256
+    stride: 256
+    add_special_tokens: false
+
+  batching:
+    token_batch_size: 8
+
+  scoring:
+    alpha: 1.0
+    epsilon: 1.0e-12
+    expand_range: [0, 0]
+    ignore_special_tokens: true
+    ignore_token_ids: []
+
+  output:
+    root_dir: outputs/discovery
+    top_k: 100
