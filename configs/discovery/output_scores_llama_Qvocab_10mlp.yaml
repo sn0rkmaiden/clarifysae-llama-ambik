@@ -1,4 +1,4 @@
-experiment_name: llama32_1b_vocab_discovery_Q_vocab_10mlp
+experiment_name: llama_vocab_discovery_layer10mlp
 seed: 42
 
 model:
