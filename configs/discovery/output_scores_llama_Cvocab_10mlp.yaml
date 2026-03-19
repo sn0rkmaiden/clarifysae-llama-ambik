@@ -10,7 +10,7 @@ model:
 output_scoring:
   name: C_topk50
   root_dir: outputs/discovery
-  feature_scores_path: outputs/discovery/llama32_1b_vocab_discovery/C/feature_scores.pt
+  feature_scores_path: outputs/discovery/llama_vocab_discovery_layer10mlp/C/feature_scores.pt
   feature_score_key: scores
   top_k_features: 50
   # feature_indices: [1, 2, 3]  # optional manual override
