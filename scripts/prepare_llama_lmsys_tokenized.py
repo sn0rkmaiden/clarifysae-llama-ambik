@@ -25,7 +25,8 @@ def normalize_messages(sample: dict[str, Any], conversation_column: str) -> list
         if not isinstance(content, str):
             content = str(content)
         role = "assistant" if str(role).lower() in {"assistant", "gpt", "model", "bot"} else "user"
-        messages.append({"role": role, "content": content})
+        if content.strip():
+            messages.append({"role": role, "content": content})
     return messages
 
 
@@ -77,53 +78,47 @@ def main() -> None:
         if args.max_samples:
             ds = ds.select(range(min(args.max_samples * 3, len(ds))))
 
-    def transform(batch: dict[str, list[Any]]) -> dict[str, list[Any]]:
-        out = {"tokens": [], "text": [], "conversation_id": [], "model": [], "language": []}
-        n = len(batch[args.conversation_column])
-        for i in range(n):
-            sample = {k: batch[k][i] for k in batch.keys()}
-            messages = normalize_messages(sample, args.conversation_column)
-            if not messages:
-                continue
-            try:
-                tokens = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=False,
-                    truncation=True,
-                    max_length=args.max_length,
-                )
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=False,
-                )
-            except Exception:
-                text = fallback_render(messages)
-                tokens = tokenizer(
-                    text,
-                    truncation=True,
-                    max_length=args.max_length,
-                    add_special_tokens=True,
-                )["input_ids"]
-            if len(tokens) < args.min_tokens:
-                continue
-            out["tokens"].append(tokens)
-            out["text"].append(text)
-            out["conversation_id"].append(sample.get("conversation_id"))
-            out["model"].append(sample.get("model"))
-            out["language"].append(sample.get("language"))
-        return out
+    def transform(sample: dict[str, Any]) -> dict[str, Any]:
+        messages = normalize_messages(sample, args.conversation_column)
+        if not messages:
+            return {"tokens": [], "text": "", "conversation_id": sample.get("conversation_id"), "model": sample.get("model"), "language": sample.get("language")}
+        try:
+            tokens = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=False,
+                truncation=True,
+                max_length=args.max_length,
+            )
+            text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        except Exception:
+            text = fallback_render(messages)
+            tokens = tokenizer(
+                text,
+                truncation=True,
+                max_length=args.max_length,
+                add_special_tokens=True,
+            )["input_ids"]
+        return {
+            "tokens": tokens,
+            "text": text,
+            "conversation_id": sample.get("conversation_id"),
+            "model": sample.get("model"),
+            "language": sample.get("language"),
+        }
 
-    keep_cols = [c for c in [args.conversation_column, "conversation_id", "model", "language"] if c in ds.column_names]
     ds = ds.map(
         transform,
-        batched=True,
-        remove_columns=[c for c in ds.column_names if c not in keep_cols],
-        num_proc=None if args.streaming else args.num_proc,
+        batched=False,
+        remove_columns=[c for c in ds.column_names if c != args.conversation_column and c not in {"conversation_id", "model", "language"}],
+        num_proc=args.num_proc,
         desc="Tokenizing LMSYS with Llama tokenizer",
     )
-    ds = ds.filter(lambda x: len(x["tokens"]) >= args.min_tokens, num_proc=None if args.streaming else args.num_proc)
+    ds = ds.filter(lambda x: len(x["tokens"]) >= args.min_tokens, num_proc=args.num_proc)
     if len(ds) > args.max_samples:
         ds = ds.select(range(args.max_samples))
 
