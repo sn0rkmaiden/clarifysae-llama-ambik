@@ -19,7 +19,7 @@ discovery:
 
   dataset:
     source: parquet
-    path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
+    path: data/processed/lmsys_llama32_1b_tokenized_test/train.parquet
     text_column: tokens
     n_texts: 4096
 
