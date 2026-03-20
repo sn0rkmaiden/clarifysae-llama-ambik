@@ -17,13 +17,10 @@ discovery:
     C: data/vocabs/clarifying_vocab.json
     Q: data/vocabs/question_vocab.json
 
-    dataset:
-      source: parquet
-      name: data/processed/lmsys_llama32_1b_tokenized/train.parquet
-      # split: train
-      text_column: tokens
-      streaming: true
-      n_texts: 4096
+  dataset:
+    source: parquet
+    path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
+    text_column: tokens
 
   # dataset:
   #   source: huggingface
