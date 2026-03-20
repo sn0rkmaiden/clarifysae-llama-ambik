@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
+import pandas as pd
 import torch
 from datasets import Dataset, load_dataset
 
@@ -37,16 +37,25 @@ def _load_text_dataset(dataset_cfg: dict[str, Any]) -> Dataset:
         return dataset
 
     path = str(dataset_cfg['path'])
-    split = dataset_cfg.get('split', 'train')
+
     if source == 'csv':
         loaded = load_dataset('csv', data_files=path)
+        split = dataset_cfg.get('split', 'train')
+        return loaded[split]
+
     elif source == 'json':
         loaded = load_dataset('json', data_files=path)
+        split = dataset_cfg.get('split', 'train')
+        return loaded[split]
+
     elif source == 'parquet':
-        loaded = load_dataset('parquet', data_files={'train': path})
+        df = pd.read_parquet(path)
+        return Dataset.from_pandas(df, preserve_index=False)
+
     else:
         loaded = load_dataset('text', data_files=path)
-    return loaded[split]
+        split = dataset_cfg.get('split', 'train')
+        return loaded[split]
 
 
 def _normalize_token_ids(value: Any) -> list[int]:
