@@ -35,6 +35,7 @@ discovery:
     max_length: 256
     stride: 256
     add_special_tokens: false
+    kind: pretokenized
 
   batching:
     token_batch_size: 8
