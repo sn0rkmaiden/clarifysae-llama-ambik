@@ -43,7 +43,7 @@ def _load_text_dataset(dataset_cfg: dict[str, Any]) -> Dataset:
     elif source == 'json':
         loaded = load_dataset('json', data_files=path)
     elif source == 'parquet':
-        loaded = load_dataset('parquet', data_files=path)
+        loaded = load_dataset('parquet', data_files={'train': path})
     else:
         loaded = load_dataset('text', data_files=path)
     return loaded[split]
