@@ -26,14 +26,21 @@ output_scoring:
     max_length: 256
     stride: 256
     add_special_tokens: false
+    kind: pretokenized
 
   batching:
     token_batch_size: 8
 
-  amax_dataset:
-    source: huggingface
-    name: Skylion007/openwebtext
-    split: train
-    text_column: text
-    streaming: true
-    n_texts: 1024
+  # amax_dataset:
+  #   source: huggingface
+  #   name: Skylion007/openwebtext
+  #   split: train
+  #   text_column: text
+  #   streaming: true
+  #   n_texts: 1024
+
+
+amax_dataset:
+  source: parquet
+  path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
+  text_column: tokens
