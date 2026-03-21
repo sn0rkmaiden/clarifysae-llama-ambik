@@ -8,7 +8,7 @@ model:
   device_map: auto
 
 output_scoring:
-  name: C_topk50_layer10mlp_lmsys
+  name: C_topk50
   root_dir: outputs/discovery
   feature_scores_path: outputs/discovery/llama_vocab_discovery_layer10mlp/C/feature_scores.pt
   feature_score_key: scores

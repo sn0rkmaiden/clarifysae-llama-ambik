@@ -117,7 +117,7 @@ Example config:
 Run it with:
 
 ```bash
-python -m clarifysae_llama.runners.compute_output_scores --config configs/discovery/compute_output_scores_llama32_1b.yaml
+python -m clarifysae_llama.runners.compute_output_scores --config configs/discovery/output_scores_llama_Cvocab_10mlp.yaml
 ```
 
 Outputs are written under:
