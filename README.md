@@ -89,7 +89,7 @@ Example config:
 Run it with:
 
 ```bash
-python -m clarifysae_llama.runners.discover_features --config configs/discovery/discover_llama32_1b_vocab_scores.yaml
+python -m clarifysae_llama.runners.discover_features --config configs/discovery/discover_llama_vocab_layer12mlp.yaml
 ```
 
 Outputs are written under:
