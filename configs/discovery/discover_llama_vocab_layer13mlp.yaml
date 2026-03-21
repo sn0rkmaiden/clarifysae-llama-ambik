@@ -18,13 +18,11 @@ discovery:
     Q: data/vocabs/question_vocab.json
 
   dataset:
-    source: huggingface
-    name: Skylion007/openwebtext
-    split: train
-    text_column: text
-    streaming: true
+    source: parquet
+    path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
+    text_column: tokens
     n_texts: 4096
-
+    
   tokenization:
     max_length: 256
     stride: 256

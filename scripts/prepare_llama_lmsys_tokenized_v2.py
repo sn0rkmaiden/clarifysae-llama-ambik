@@ -10,6 +10,18 @@ from datasets import Dataset, load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+"""
+python scripts/prepare_llama_lmsys_tokenized_robust.py \
+  --dataset lmsys/lmsys-chat-1m \
+  --split train \
+  --model unsloth/Llama-3.2-1B-Instruct \
+  --output-dir data/processed/lmsys_llama32_1b_tokenized_test \
+  --conversation-column conversation \
+  --language English \
+  --max-samples 20 \
+  --max-length 2048 \
+  --streaming
+"""
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()

@@ -23,14 +23,6 @@ discovery:
     text_column: tokens
     n_texts: 4096
 
-  # dataset:
-  #   source: huggingface
-  #   name: Skylion007/openwebtext
-  #   split: train
-  #   text_column: text
-  #   streaming: true
-  #   n_texts: 4096
-
   tokenization:
     max_length: 256
     stride: 256
