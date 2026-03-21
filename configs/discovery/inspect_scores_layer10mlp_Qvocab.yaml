@@ -6,7 +6,7 @@ inspection:
       path: outputs/discovery/llama_vocab_discovery_layer10mlp/Q/feature_scores.csv
   output_score_table:
     name: output
-    path: outputs/discovery/llama_vocab_discovery_layer10mlp/output_scores/C_topk50/output_scores.csv
+    path: outputs/discovery/llama_vocab_discovery_layer10mlp/output_scores/Q_topk50/output_scores.csv
   sort_by: output_output_score
   ascending: false
   top_n: 50
