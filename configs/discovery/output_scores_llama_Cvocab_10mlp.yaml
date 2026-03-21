@@ -8,7 +8,7 @@ model:
   device_map: auto
 
 output_scoring:
-  name: C_topk50
+  name: C_topk50_layer10mlp_lmsys
   root_dir: outputs/discovery
   feature_scores_path: outputs/discovery/llama_vocab_discovery_layer10mlp/C/feature_scores.pt
   feature_score_key: scores
@@ -31,6 +31,12 @@ output_scoring:
   batching:
     token_batch_size: 8
 
+  amax_dataset:
+    source: parquet
+    path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
+    text_column: tokens
+    n_texts: 4096
+    
   # amax_dataset:
   #   source: huggingface
   #   name: Skylion007/openwebtext
@@ -40,7 +46,3 @@ output_scoring:
   #   n_texts: 1024
 
 
-amax_dataset:
-  source: parquet
-  path: data/processed/lmsys_llama32_1b_tokenized/train.parquet
-  text_column: tokens
