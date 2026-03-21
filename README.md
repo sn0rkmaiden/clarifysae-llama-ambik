@@ -140,7 +140,7 @@ Example config:
 Run it with:
 
 ```bash
-python -m clarifysae_llama.runners.inspect_scores --config configs/discovery/inspect_scores.yaml
+python -m clarifysae_llama.runners.inspect_scores --config configs/discovery/inspect_scores_layer10mlp_Cvocab.yaml
 ```
 
 This writes:

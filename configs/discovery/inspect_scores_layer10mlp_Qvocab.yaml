@@ -10,4 +10,4 @@ inspection:
   sort_by: output_output_score
   ascending: false
   top_n: 50
-  output_dir: outputs/discovery/inspection_layer10mlp
+  output_dir: outputs/discovery/inspection_layer10mlp_Qvocab
