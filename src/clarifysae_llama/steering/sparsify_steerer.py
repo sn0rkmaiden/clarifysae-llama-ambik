@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from sparsify import Sae
 
-from clarifysae_llama.discovery.sae_utils import encode_dense
+from clarifysae_llama.discovery.sae_utils import SparseLatents, encode_sparse
 from clarifysae_llama.steering.config import SteeringConfig
 from clarifysae_llama.steering.hook_utils import get_submodule_by_path, map_sae_hookpoint_to_hf_module_path
 
@@ -46,19 +46,39 @@ class SparsifySteerer:
         if hidden.ndim != 3:
             raise ValueError(f'Expected hidden states with shape [batch, seq, d_model], got {tuple(hidden.shape)}')
 
+        original_device = hidden.device
         original_dtype = hidden.dtype
         original_shape = hidden.shape
-        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.model_device, dtype=self.dtype)
 
-        # Normalize any sparse / tuple SAE encode output into a dense tensor.
-        latents = encode_dense(self.sae, hidden_2d).to(device=self.model_device, dtype=self.dtype)
+        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(
+            device=self.model_device,
+            dtype=self.dtype,
+        )
+
+        sparse_latents = encode_sparse(self.sae, hidden_2d)
+        if not isinstance(sparse_latents, SparseLatents):
+            raise TypeError(
+                f"encode_sparse(...) returned {type(sparse_latents)!r}, expected SparseLatents"
+            )
+
+        top_acts = sparse_latents.top_acts.clone()
+        top_indices = sparse_latents.top_indices.clone()
 
         if self.config.log_feature_acts:
-            feature_slice = latents[:, self.config.feature_indices]
-            self.last_feature_stats = {
-                'mean_abs_activation': float(feature_slice.abs().mean().item()),
-                'max_abs_activation': float(feature_slice.abs().max().item()),
-            }
+            stats_mask = torch.zeros_like(top_acts, dtype=torch.bool)
+            for feature_idx in self.config.feature_indices:
+                stats_mask |= (top_indices == int(feature_idx))
+            selected = top_acts[stats_mask]
+            if selected.numel() == 0:
+                self.last_feature_stats = {
+                    'mean_abs_activation': 0.0,
+                    'max_abs_activation': 0.0,
+                }
+            else:
+                self.last_feature_stats = {
+                    'mean_abs_activation': float(selected.abs().mean().item()),
+                    'max_abs_activation': float(selected.abs().max().item()),
+                }
 
         if self.config.mode != 'additive':
             raise ValueError(f'Unsupported steering mode: {self.config.mode}')
@@ -66,19 +86,40 @@ class SparsifySteerer:
         if self.config.apply_to != 'all_positions':
             raise ValueError(f'Unsupported apply_to mode for current repo version: {self.config.apply_to}')
 
-        latents[:, self.config.feature_indices] += self.config.strength
+        for feature_idx in self.config.feature_indices:
+            feature_idx = int(feature_idx)
+
+            hit_mask = top_indices == feature_idx
+            if hit_mask.any():
+                top_acts[hit_mask] += self.config.strength
+
+            missing_rows = ~hit_mask.any(dim=1)
+            if missing_rows.any():
+                replacement_col = torch.argmin(top_acts[missing_rows], dim=1)
+                row_idx = torch.arange(replacement_col.shape[0], device=top_acts.device)
+
+                acts_missing = top_acts[missing_rows].clone()
+                idx_missing = top_indices[missing_rows].clone()
+
+                idx_missing[row_idx, replacement_col] = feature_idx
+                acts_missing[row_idx, replacement_col] = self.config.strength
+
+                top_acts[missing_rows] = acts_missing
+                top_indices[missing_rows] = idx_missing
 
         if self.config.clamp_latents is not None:
-            latents = latents.clamp(max=self.config.clamp_latents)
+            top_acts = top_acts.clamp(max=self.config.clamp_latents)
 
-        recon = self.sae.decode(latents).reshape(original_shape)
+        recon = self.sae.decode(top_acts, top_indices)
+        recon = recon.reshape(original_shape).to(
+            device=original_device,
+            dtype=original_dtype,
+        )
 
         if self.config.normalize_reconstruction:
             in_norm = hidden.norm(dim=-1, keepdim=True).clamp_min(1e-6)
             out_norm = recon.norm(dim=-1, keepdim=True).clamp_min(1e-6)
             recon = recon * (in_norm / out_norm)
-
-        recon = recon.to(original_dtype)
 
         if self.config.preserve_unsteered_residual:
             delta = recon - hidden
