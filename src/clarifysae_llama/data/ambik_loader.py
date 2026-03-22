@@ -14,6 +14,16 @@ REQUIRED_COLUMNS = {
 
 def load_ambik_no_help_dataset(path: str | Path, limit: int | None = None) -> pd.DataFrame:
     df = pd.read_csv(path)
+
+    # Be tolerant to common CSV export variants:
+    # 1) pandas-saved index column called "Unnamed: 0"
+    # 2) no explicit id column at all
+    if 'id' not in df.columns:
+        if 'Unnamed: 0' in df.columns:
+            df = df.rename(columns={'Unnamed: 0': 'id'})
+        else:
+            df.insert(0, 'id', range(len(df)))
+
     missing = REQUIRED_COLUMNS.difference(df.columns)
     if missing:
         raise ValueError(f'Missing required columns in dataset: {sorted(missing)}')
