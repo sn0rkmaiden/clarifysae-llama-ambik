@@ -1,0 +1,10 @@
+sweep:
+  mode: single_feature_strength
+  strengths: [3.0]
+  groups:
+    - vocab: C
+      hookpoint: layers.10.mlp
+      features: [11288]
+    - vocab: Q
+      hookpoint: layers.12.mlp
+      features: [3557]

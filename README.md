@@ -55,24 +55,109 @@ python -m clarifysae_llama.runners.run_eval --config configs/steer_llama32_1b.ya
 
 ## Strength sweep
 
+Legacy one-parameter sweep:
+
 ```bash
 python -m clarifysae_llama.runners.sweep --config configs/sweep_strength.yaml
 ```
+
+## Automated single-feature steering sweeps
+
+Use this mode when you want to try many features and many strengths but keep every actual run as a **single-feature intervention**.
+
+### Config format
+
+```yaml
+experiment_name: llama32_1b_single_feature_strength_sweep
+base_config: configs/steer_llama32_1b.yaml
+sweep:
+  mode: single_feature_strength
+  strengths: [1.0, 3.0, 5.0, 10.0]
+  groups:
+    - vocab: C
+      hookpoint: layers.10.mlp
+      features: [11288, 93503]
+    - vocab: Q
+      hookpoint: layers.12.mlp
+      features: [3557, 130523]
+```
+
+Each generated run overrides the base config with:
+- one `steering.hookpoint`
+- one `steering.feature_indices: [feature_id]`
+- one `steering.strength`
+
+`vocab` is metadata for tracking your C and Q selections. It is included in generated run names, the sweep manifest, and `outputs/logs/runs.jsonl`.
+This means the same feature ID can appear under both vocab groups without collisions.
+
+### Recommended workflow
+
+1. Edit `configs/sweep_single_feature_strengths_chosen.yaml`.
+2. Change only:
+   - `sweep.strengths`
+   - the `features` lists inside each `(vocab, hookpoint)` group
+3. Run:
+
+```bash
+python -m clarifysae_llama.runners.sweep --config configs/sweep_single_feature_strengths_chosen.yaml
+```
+
+Or use the helper script:
+
+```bash
+./scripts/sweep_single_feature_strengths.sh
+```
+
+The helper script defaults to `configs/sweep_single_feature_strengths_chosen.yaml`, and you can pass another config path as its first argument.
+
+### Generated run names
+
+Run names are created automatically from:
+- sweep name
+- vocab
+- hookpoint
+- feature index
+- strength
+
+Example:
+
+```text
+llama32_1b_chosen_single_feature_strength_sweep__C__l10_mlp__feat11288__str5p0
+```
+
+This removes the need to manage one config per feature by hand.
 
 ## Outputs
 
 Each run writes into `outputs/`:
 - `predictions/<experiment_name>/predictions.jsonl`
-- `metrics/<experiment_name>/example_metrics.csv`
-- `tables/<experiment_name>/aggregate_metrics.csv`
+- `<experiment_name>/metrics/example_metrics.csv`
+- `<experiment_name>/tables/aggregate_metrics.csv`
 - `logs/runs.jsonl`
+
+Each automated sweep also writes into `outputs/sweeps/<sweep_name>/`:
+- `generated_configs/<run_name>.yaml`
+- `manifest.csv`
+- `manifest.jsonl`
+- `source_sweep_config.yaml`
+
+The sweep manifest includes:
+- `run_name`
+- `vocab`
+- `hookpoint`
+- `feature_index`
+- `strength`
+- `config_path`
+- `predictions_path`
+- `example_metrics_path`
+- `aggregate_metrics_path`
 
 ## Notes
 
-- The steered config ships with a placeholder feature index. Replace it with a real one before running.
+- The steered config ships with a placeholder feature index. Replace it with a real one before using `configs/steer_llama32_1b.yaml` directly.
+- `strength: 0.0` is **not** a true no-steering baseline in this repo, because the SAE reconstruction path is still used when steering is enabled. Use `configs/base_llama32_1b.yaml` for the real baseline.
 - Hookpoint-to-module mapping is implemented for Llama-style architectures and can be extended later.
 - The runner starts with the `no_help` setup because it is the cleanest path for Phase 1 replication.
-
 
 ## Feature discovery with C / Q vocabularies
 
@@ -100,7 +185,6 @@ Outputs are written under:
 Notes:
 - Replace the example vocab paths with your real C and Q vocab files.
 - This runner computes a generic vocab score from positive-token activation minus background activation, with an entropy term across vocab groups.
-
 
 ## OutputScores
 

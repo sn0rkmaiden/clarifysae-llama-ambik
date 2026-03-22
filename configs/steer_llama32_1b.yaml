@@ -1,4 +1,4 @@
-experiment_name: llama32_1b_sae_no_help
+experiment_name: llama_sae_no_help
 seed: 42
 
 model:
@@ -37,7 +37,7 @@ batching:
   batch_size: 2
 
 dataset:
-  path: data/raw/ambik/ambik_test_400.csv
+  path: data/raw/ambik/ambik_test_900.csv
   limit: null
 
 output:
