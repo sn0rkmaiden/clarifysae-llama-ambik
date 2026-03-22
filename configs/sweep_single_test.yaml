@@ -1,3 +1,5 @@
+experiment_name: llama_single_feature_test
+base_config: configs/steer_llama32_1b.yaml
 sweep:
   mode: single_feature_strength
   strengths: [3.0]
