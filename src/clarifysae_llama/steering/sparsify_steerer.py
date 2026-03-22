@@ -5,6 +5,7 @@ from typing import Any
 import torch
 from sparsify import Sae
 
+from clarifysae_llama.discovery.sae_utils import encode_dense
 from clarifysae_llama.steering.config import SteeringConfig
 from clarifysae_llama.steering.hook_utils import get_submodule_by_path, map_sae_hookpoint_to_hf_module_path
 
@@ -49,7 +50,8 @@ class SparsifySteerer:
         original_shape = hidden.shape
         hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.model_device, dtype=self.dtype)
 
-        latents = self.sae.encode(hidden_2d)
+        # Normalize any sparse / tuple SAE encode output into a dense tensor.
+        latents = encode_dense(self.sae, hidden_2d).to(device=self.model_device, dtype=self.dtype)
 
         if self.config.log_feature_acts:
             feature_slice = latents[:, self.config.feature_indices]
