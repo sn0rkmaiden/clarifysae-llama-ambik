@@ -37,7 +37,7 @@ batching:
   batch_size: 2
 
 dataset:
-  path: data/raw/ambik/ambik_test_900.csv
+  path: data/raw/ambik/ambik_test_100.csv
   limit: null
 
 output:
