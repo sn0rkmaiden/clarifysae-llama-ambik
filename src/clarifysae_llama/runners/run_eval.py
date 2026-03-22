@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import math
+import os
+import time
+import warnings
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from tqdm import tqdm
+from transformers.utils import logging as hf_logging
 
 from clarifysae_llama.backends.hf_backend import HFCausalBackend
 from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
@@ -17,6 +22,33 @@ from clarifysae_llama.eval.reporting import save_metric_tables
 from clarifysae_llama.utils.io import ensure_dir, write_jsonl
 from clarifysae_llama.utils.logging import log_run
 from clarifysae_llama.utils.seed import set_seed
+
+
+
+def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
+    console_cfg = config.get('console', {})
+    suppress_tf_warnings = bool(console_cfg.get('suppress_transformers_warnings', True))
+    show_progress = bool(console_cfg.get('show_progress', True))
+
+    if suppress_tf_warnings:
+        os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
+        hf_logging.set_verbosity_error()
+        warnings.filterwarnings('ignore', message=r'.*`torch_dtype` is deprecated! Use `dtype` instead!.*')
+        warnings.filterwarnings(
+            'ignore',
+            message=r'.*Both `max_new_tokens` .* and `max_length`.*',
+        )
+        warnings.filterwarnings(
+            'ignore',
+            message=r'.*The following generation flags are not valid and may be ignored:.*',
+        )
+    else:
+        hf_logging.set_verbosity_warning()
+
+    return {
+        'show_progress': show_progress,
+        'suppress_transformers_warnings': suppress_tf_warnings,
+    }
 
 
 
@@ -53,7 +85,30 @@ def build_prompts(dataset: pd.DataFrame) -> list[dict]:
 
 
 
+def _print_run_header(config: dict[str, Any], n_examples: int, batch_size: int) -> None:
+    experiment_name = config['experiment_name']
+    dataset_path = config['dataset']['path']
+    n_batches = math.ceil(n_examples / batch_size) if n_examples else 0
+
+    print(f"\n=== run_eval :: {experiment_name} ===")
+    print(f"dataset: {dataset_path}")
+    print(f"eval examples: {n_examples} | batch_size: {batch_size} | batches: {n_batches}")
+
+    steering_cfg = config.get('steering', {})
+    if steering_cfg.get('enabled', False):
+        print(
+            'steering: '
+            f"hookpoint={steering_cfg.get('hookpoint')} "
+            f"features={steering_cfg.get('feature_indices')} "
+            f"strength={steering_cfg.get('strength')}"
+        )
+    else:
+        print('steering: disabled')
+
+
+
 def run_eval(config: dict) -> dict[str, Any]:
+    console_cfg = _configure_console(config)
     set_seed(int(config.get('seed', 42)))
 
     experiment_name = config['experiment_name']
@@ -70,9 +125,20 @@ def run_eval(config: dict) -> dict[str, Any]:
 
     backend = build_backend(config)
     batch_size = int(config.get('batching', {}).get('batch_size', 1))
+    _print_run_header(config, n_examples=len(prompt_rows), batch_size=batch_size)
 
+    started_at = time.perf_counter()
     prediction_rows = []
-    for start in tqdm(range(0, len(prompt_rows), batch_size), desc='Generating'):
+    iterator = range(0, len(prompt_rows), batch_size)
+    if console_cfg['show_progress']:
+        iterator = tqdm(
+            iterator,
+            desc=f"{experiment_name} | generating",
+            unit='batch',
+            dynamic_ncols=True,
+        )
+
+    for start in iterator:
         chunk = prompt_rows[start:start + batch_size]
         prompts = [row['prompt'] for row in chunk]
         predictions = backend.generate_batch(prompts)
@@ -108,6 +174,12 @@ def run_eval(config: dict) -> dict[str, Any]:
     example_metrics_path = run_dir / 'metrics' / 'example_metrics.csv'
     aggregate_metrics_path = run_dir / 'tables' / 'aggregate_metrics.csv'
 
+    elapsed_sec = time.perf_counter() - started_at
+    print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
+    print(f"  predictions: {predictions_path}")
+    print(f"  example metrics: {example_metrics_path}")
+    print(f"  aggregate metrics: {aggregate_metrics_path}")
+
     log_payload = {
         'experiment_name': experiment_name,
         'dataset_path': config['dataset']['path'],
@@ -121,6 +193,7 @@ def run_eval(config: dict) -> dict[str, Any]:
         'predictions_path': str(predictions_path),
         'example_metrics_path': str(example_metrics_path),
         'aggregate_metrics_path': str(aggregate_metrics_path),
+        'elapsed_sec': elapsed_sec,
     }
     if 'run_metadata' in config:
         log_payload['run_metadata'] = config['run_metadata']
@@ -133,6 +206,7 @@ def run_eval(config: dict) -> dict[str, Any]:
         'example_metrics_path': str(example_metrics_path),
         'aggregate_metrics_path': str(aggregate_metrics_path),
         'run_metadata': config.get('run_metadata'),
+        'elapsed_sec': elapsed_sec,
     }
 
 
