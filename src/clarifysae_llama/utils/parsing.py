@@ -22,6 +22,40 @@ def _first_curly_to_end(text: str) -> str | None:
     return text[start:] if start != -1 else None
 
 
+def _extract_first_balanced_json_object(text: str) -> str | None:
+    start = text.find('{')
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaping = False
+
+    for idx in range(start, len(text)):
+        ch = text[idx]
+
+        if in_string:
+            if escaping:
+                escaping = False
+            elif ch == '\\':
+                escaping = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+
+    return None
+
+
 def _balance_closers(text: str) -> str:
     in_string = False
     escaping = False
@@ -117,15 +151,17 @@ def _schema_parse_fallback(text: str) -> dict[str, Any]:
 
 def parse_model_json(raw_output: str) -> dict[str, Any] | None:
     body = _strip_fences_and_eos(raw_output)
-    body = _first_curly_to_end(body) or body
+    candidate = _extract_first_balanced_json_object(body)
+    if candidate is None:
+        candidate = _first_curly_to_end(body) or body
 
     try:
-        obj = json.loads(body)
+        obj = json.loads(candidate)
         return obj if isinstance(obj, dict) else None
     except Exception:
         pass
 
-    repaired = re.sub(r',(\s*[}\]])', r'\1', body)
+    repaired = re.sub(r',(\s*[}\]])', r'\1', candidate)
     repaired = re.sub(r'\bTrue\b', 'true', repaired)
     repaired = re.sub(r'\bFalse\b', 'false', repaired)
     repaired = re.sub(r'\bNone\b', 'null', repaired)

@@ -17,7 +17,6 @@ def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
     return mapping[dtype_name]
 
 
-
 def normalize_generation_kwargs(generation_kwargs: dict[str, Any], tokenizer) -> dict[str, Any]:
     kwargs = dict(generation_kwargs)
 
@@ -52,6 +51,8 @@ class HFCausalBackend:
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # Llama-style causal generation should be left-padded in batch mode.
+        self.tokenizer.padding_side = 'left'
 
         model_kwargs: dict[str, Any] = {'dtype': self.dtype}
         if model_cfg.get('device_map', None) is not None:
@@ -69,24 +70,33 @@ class HFCausalBackend:
         return {k: v.to(model_device) for k, v in tokenized.items()}
 
     @staticmethod
-    def _decode_continuations(tokenizer, outputs, attention_mask) -> list[str]:
-        input_lengths = attention_mask.sum(dim=1).tolist()
-        decoded: list[str] = []
-        for row_idx, input_len in enumerate(input_lengths):
-            continuation_ids = outputs[row_idx, int(input_len):]
-            decoded.append(tokenizer.decode(continuation_ids, skip_special_tokens=True).strip())
-        return decoded
+    def _decode_new_tokens(tokenizer, sequence: torch.Tensor, prompt_width: int) -> str:
+        continuation_ids = sequence[int(prompt_width):]
+        return tokenizer.decode(
+            continuation_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).strip()
 
     @torch.inference_mode()
     def generate(self, prompt: str) -> str:
         inputs = self.tokenizer(prompt, return_tensors='pt')
         inputs = self._inputs_to_model_device(inputs)
         output = self.model.generate(**inputs, **self.generation_kwargs)
-        return self._decode_continuations(self.tokenizer, output, inputs['attention_mask'])[0]
+        prompt_width = int(inputs['input_ids'].shape[1])
+        return self._decode_new_tokens(self.tokenizer, output[0], prompt_width)
 
     @torch.inference_mode()
     def generate_batch(self, prompts: list[str]) -> list[str]:
         inputs = self.tokenizer(prompts, return_tensors='pt', padding=True, truncation=True)
         inputs = self._inputs_to_model_device(inputs)
         outputs = self.model.generate(**inputs, **self.generation_kwargs)
-        return self._decode_continuations(self.tokenizer, outputs, inputs['attention_mask'])
+
+        # In batched generation with left padding, new tokens begin after the
+        # full padded prompt width for every row, not after each row's
+        # non-padding token count.
+        prompt_width = int(inputs['input_ids'].shape[1])
+        return [
+            self._decode_new_tokens(self.tokenizer, outputs[row_idx], prompt_width)
+            for row_idx in range(outputs.shape[0])
+        ]
