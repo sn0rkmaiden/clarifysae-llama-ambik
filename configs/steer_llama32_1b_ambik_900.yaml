@@ -26,7 +26,7 @@ steering:
   strength: 5.0
   mode: additive
   apply_to: all_positions
-  steer_generated_tokens_only: true
+  steer_generated_tokens_only: false
   runtime:
     normalize_reconstruction: false
     preserve_unsteered_residual: false
@@ -37,7 +37,7 @@ batching:
   batch_size: 2
 
 dataset:
-  path: data/raw/ambik/ambik_calib_100.csv
+  path: data/raw/ambik/ambik_test_900.csv
   limit: null
 
 output:

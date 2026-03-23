@@ -1,8 +1,8 @@
-experiment_name: llama_single_feature_test
+experiment_name: steer_generated_tokens_single_test
 base_config: configs/steer_llama32_1b.yaml
 sweep:
   mode: single_feature_strength
-  strengths: [1.0, 3.0, 5.0, 10.0]
+  strengths: [0.1, 0.5, 1.0, 3.0, 5.0]
   groups:
     - vocab: C
       hookpoint: layers.10.mlp
