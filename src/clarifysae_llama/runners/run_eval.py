@@ -224,6 +224,7 @@ def run_eval(config: dict) -> dict[str, Any]:
             'ambiguity_decision_correct',
             'model_questions',
             'num_questions',
+            'asked_question',
             'model_question_best_similarity',
             'resolved_proxy',
             'model_question_best_nli_similarity',

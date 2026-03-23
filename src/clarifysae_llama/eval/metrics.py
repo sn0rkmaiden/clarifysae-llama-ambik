@@ -82,6 +82,12 @@ def _mean_or_none(values: list[float]) -> float | None:
     return float(sum(values) / len(values))
 
 
+def _asked_question(row: dict[str, Any]) -> bool:
+    if 'asked_question' in row:
+        return bool(row['asked_question'])
+    return int(row.get('num_questions', 0)) > 0
+
+
 
 def aggregate_metrics(
     example_metrics: pd.DataFrame,
@@ -118,9 +124,9 @@ def aggregate_metrics(
     ambiguity_rows = [row for row in rows if row.get('ambiguity_decision_correct') is not None]
     ambiguity_decision_accuracy = _mean_or_none([1.0 if row['ambiguity_decision_correct'] else 0.0 for row in ambiguity_rows])
 
-    necessity_tp = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and bool(row['asked_question']))
-    necessity_fp = sum(1 for row in rows if row['ambiguity_type'] != PREFERENCE_CATEGORY and bool(row['asked_question']))
-    necessity_fn = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and not bool(row['asked_question']))
+    necessity_tp = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and _asked_question(row))
+    necessity_fp = sum(1 for row in rows if row['ambiguity_type'] != PREFERENCE_CATEGORY and _asked_question(row))
+    necessity_fn = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and not _asked_question(row))
     n_preferences = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY)
 
     necessity_precision = (
@@ -171,7 +177,7 @@ def aggregate_metrics(
     for category in sorted(counts.keys()):
         cat_rows = [row for row in rows if row['ambiguity_type'] == category]
         cat_asked = [row for row in cat_rows if int(row['num_questions']) > 0]
-        asked_rate = float(sum(1 for row in cat_rows if bool(row['asked_question'])) / len(cat_rows))
+        asked_rate = float(sum(1 for row in cat_rows if _asked_question(row)) / len(cat_rows))
         category_row: dict[str, Any] = {
             'ambiguity_type': category,
             'n_examples': len(cat_rows),
