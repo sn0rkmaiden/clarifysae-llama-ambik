@@ -17,6 +17,7 @@ def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
     return mapping[dtype_name]
 
 
+
 def normalize_generation_kwargs(generation_kwargs: dict[str, Any], tokenizer) -> dict[str, Any]:
     kwargs = dict(generation_kwargs)
 
@@ -52,7 +53,7 @@ class HFCausalBackend:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        model_kwargs: dict[str, Any] = {'torch_dtype': self.dtype}
+        model_kwargs: dict[str, Any] = {'dtype': self.dtype}
         if model_cfg.get('device_map', None) is not None:
             model_kwargs['device_map'] = model_cfg['device_map']
         if model_cfg.get('attn_implementation', None) is not None:
@@ -67,16 +68,25 @@ class HFCausalBackend:
         model_device = next(self.model.parameters()).device
         return {k: v.to(model_device) for k, v in tokenized.items()}
 
+    @staticmethod
+    def _decode_continuations(tokenizer, outputs, attention_mask) -> list[str]:
+        input_lengths = attention_mask.sum(dim=1).tolist()
+        decoded: list[str] = []
+        for row_idx, input_len in enumerate(input_lengths):
+            continuation_ids = outputs[row_idx, int(input_len):]
+            decoded.append(tokenizer.decode(continuation_ids, skip_special_tokens=True).strip())
+        return decoded
+
     @torch.inference_mode()
     def generate(self, prompt: str) -> str:
         inputs = self.tokenizer(prompt, return_tensors='pt')
         inputs = self._inputs_to_model_device(inputs)
         output = self.model.generate(**inputs, **self.generation_kwargs)
-        return self.tokenizer.decode(output[0], skip_special_tokens=True)
+        return self._decode_continuations(self.tokenizer, output, inputs['attention_mask'])[0]
 
     @torch.inference_mode()
     def generate_batch(self, prompts: list[str]) -> list[str]:
         inputs = self.tokenizer(prompts, return_tensors='pt', padding=True, truncation=True)
         inputs = self._inputs_to_model_device(inputs)
         outputs = self.model.generate(**inputs, **self.generation_kwargs)
-        return self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        return self._decode_continuations(self.tokenizer, outputs, inputs['attention_mask'])

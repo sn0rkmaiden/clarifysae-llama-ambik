@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import copy
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +19,10 @@ LEGACY_MANIFEST_COLUMNS = [
     'value',
     'config_path',
     'predictions_path',
+    'results_path',
     'example_metrics_path',
     'aggregate_metrics_path',
+    'category_metrics_path',
 ]
 
 SINGLE_FEATURE_MANIFEST_COLUMNS = [
@@ -32,8 +33,10 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'strength',
     'config_path',
     'predictions_path',
+    'results_path',
     'example_metrics_path',
     'aggregate_metrics_path',
+    'category_metrics_path',
 ]
 
 
@@ -61,8 +64,7 @@ def _short_hookpoint(hookpoint: str) -> str:
     match = re.fullmatch(r'layers\.(\d+)\.(.+)', hookpoint)
     if match:
         layer_idx, suffix = match.groups()
-        suffix = suffix.replace('.', '_')
-        return f'l{layer_idx}_{suffix}'
+        return f"l{layer_idx}_{suffix.replace('.', '_')}"
     return _sanitize_token(hookpoint)
 
 
@@ -131,18 +133,34 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
 
 
 
+def _emit_run_start(run_idx: int, total_runs: int, *, run_name: str, vocab: str | None = None, hookpoint: str | None = None, feature_index: int | None = None, strength: Any | None = None, config_path: Path) -> None:
+    print(f"\n[{run_idx}/{total_runs}] Running {run_name}")
+    details = []
+    if vocab is not None:
+        details.append(f'vocab={vocab}')
+    if hookpoint is not None:
+        details.append(f'hookpoint={hookpoint}')
+    if feature_index is not None:
+        details.append(f'feature={feature_index}')
+    if strength is not None:
+        details.append(f'strength={strength}')
+    if details:
+        print('  ' + ' '.join(details))
+    print(f'  config: {config_path}')
+
+
+
 def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
     _validate_legacy_sweep_config(sweep_cfg)
     sweep_name, sweep_dir, generated_cfg_dir = _prepare_sweep_dirs(sweep_cfg, base_cfg)
     parameter = sweep_cfg['sweep']['parameter']
     values = sweep_cfg['sweep']['values']
 
-    print(f"\n=== sweep :: {sweep_name} ===")
-    print(f"mode: legacy | parameter: {parameter} | runs: {len(values)}")
-    print(f"generated configs: {generated_cfg_dir}")
+    print(f"=== sweep :: {sweep_name} ===")
+    print(f'legacy parameter sweep over {parameter}')
+    print(f'total runs: {len(values)}')
 
     manifest_rows: list[dict[str, Any]] = []
-    total_started_at = time.perf_counter()
     for run_idx, value in enumerate(values, start=1):
         run_cfg = copy.deepcopy(base_cfg)
         set_by_dotted_path(run_cfg, parameter, value)
@@ -151,14 +169,9 @@ def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> No
         cfg_path = generated_cfg_dir / f'{run_name}.yaml'
         dump_yaml(cfg_path, run_cfg)
 
-        print(f"\n[{run_idx}/{len(values)}] {run_name}")
-        print(f"  {parameter} = {value}")
-        print(f"  config: {cfg_path}")
-
-        run_started_at = time.perf_counter()
+        _emit_run_start(run_idx, len(values), run_name=run_name, config_path=cfg_path)
         result = run_eval(run_cfg)
-        run_elapsed = time.perf_counter() - run_started_at
-        print(f"  finished in {run_elapsed:.1f}s")
+        print(f"  finished: {run_name}")
 
         manifest_rows.append({
             'run_name': run_name,
@@ -166,25 +179,35 @@ def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> No
             'value': value,
             'config_path': str(cfg_path),
             'predictions_path': result['predictions_path'],
+            'results_path': result['results_path'],
             'example_metrics_path': result['example_metrics_path'],
             'aggregate_metrics_path': result['aggregate_metrics_path'],
+            'category_metrics_path': result['category_metrics_path'],
         })
 
-    total_elapsed = time.perf_counter() - total_started_at
-    write_jsonl(sweep_dir / 'manifest.jsonl', manifest_rows)
-    write_csv(sweep_dir / 'manifest.csv', pd.DataFrame(manifest_rows, columns=LEGACY_MANIFEST_COLUMNS))
-    print(f"\nsweep complete: {sweep_name} in {total_elapsed:.1f}s")
-    print(f"manifest: {sweep_dir / 'manifest.csv'}")
+    manifest_jsonl = sweep_dir / 'manifest.jsonl'
+    manifest_csv = sweep_dir / 'manifest.csv'
+    write_jsonl(manifest_jsonl, manifest_rows)
+    write_csv(manifest_csv, pd.DataFrame(manifest_rows, columns=LEGACY_MANIFEST_COLUMNS))
+    print(f"\nSweep finished: {sweep_name}")
+    print(f'  manifest: {manifest_csv}')
 
 
 
-def _expand_single_feature_specs(
-    sweep_name: str,
-    strengths: list[Any],
-    groups: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    run_specs: list[dict[str, Any]] = []
+def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
+    _validate_single_feature_sweep_config(sweep_cfg)
+    sweep_name, sweep_dir, generated_cfg_dir = _prepare_sweep_dirs(sweep_cfg, base_cfg)
+    strengths = sweep_cfg['sweep']['strengths']
+    groups = sweep_cfg['sweep']['groups']
+
+    total_runs = sum(len(group['features']) * len(strengths) for group in groups)
+    print(f"=== sweep :: {sweep_name} ===")
+    print('mode: single_feature_strength')
+    print(f'total runs: {total_runs}')
+
+    manifest_rows: list[dict[str, Any]] = []
     seen_run_names: set[str] = set()
+    run_counter = 0
 
     for group_idx, group in enumerate(groups):
         vocab = group.get('vocab')
@@ -194,6 +217,12 @@ def _expand_single_feature_specs(
         for feature_index in features:
             feature_index = int(feature_index)
             for strength in strengths:
+                run_counter += 1
+                run_cfg = copy.deepcopy(base_cfg)
+                set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
+                set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
+                set_by_dotted_path(run_cfg, 'steering.strength', strength)
+
                 run_name = _build_single_feature_run_name(
                     experiment_prefix=sweep_name,
                     vocab=None if vocab is None else str(vocab),
@@ -207,88 +236,53 @@ def _expand_single_feature_specs(
                         f'{run_name}'
                     )
                 seen_run_names.add(run_name)
-                run_specs.append({
+
+                run_cfg['experiment_name'] = run_name
+                run_cfg['run_metadata'] = {
+                    'sweep_name': sweep_name,
+                    'sweep_mode': 'single_feature_strength',
                     'group_index': group_idx,
                     'vocab': vocab,
                     'hookpoint': hookpoint,
                     'feature_index': feature_index,
                     'strength': strength,
+                }
+
+                cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                dump_yaml(cfg_path, run_cfg)
+                _emit_run_start(
+                    run_counter,
+                    total_runs,
+                    run_name=run_name,
+                    vocab=None if vocab is None else str(vocab),
+                    hookpoint=hookpoint,
+                    feature_index=feature_index,
+                    strength=strength,
+                    config_path=cfg_path,
+                )
+                result = run_eval(run_cfg)
+                print(f"  finished: {run_name}")
+                manifest_rows.append({
                     'run_name': run_name,
+                    'vocab': vocab,
+                    'hookpoint': hookpoint,
+                    'feature_index': feature_index,
+                    'strength': strength,
+                    'config_path': str(cfg_path),
+                    'predictions_path': result['predictions_path'],
+                    'results_path': result['results_path'],
+                    'example_metrics_path': result['example_metrics_path'],
+                    'aggregate_metrics_path': result['aggregate_metrics_path'],
+                    'category_metrics_path': result['category_metrics_path'],
                 })
 
-    return run_specs
-
-
-
-def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
-    _validate_single_feature_sweep_config(sweep_cfg)
-    sweep_name, sweep_dir, generated_cfg_dir = _prepare_sweep_dirs(sweep_cfg, base_cfg)
-    strengths = sweep_cfg['sweep']['strengths']
-    groups = sweep_cfg['sweep']['groups']
-    run_specs = _expand_single_feature_specs(sweep_name=sweep_name, strengths=strengths, groups=groups)
-
-    print(f"\n=== sweep :: {sweep_name} ===")
-    print(f"mode: single_feature_strength | groups: {len(groups)} | strengths: {len(strengths)} | runs: {len(run_specs)}")
-    print(f"generated configs: {generated_cfg_dir}")
-
-    manifest_rows: list[dict[str, Any]] = []
-    total_started_at = time.perf_counter()
-
-    for run_idx, spec in enumerate(run_specs, start=1):
-        vocab = spec['vocab']
-        hookpoint = spec['hookpoint']
-        feature_index = spec['feature_index']
-        strength = spec['strength']
-        run_name = spec['run_name']
-
-        run_cfg = copy.deepcopy(base_cfg)
-        set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
-        set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
-        set_by_dotted_path(run_cfg, 'steering.strength', strength)
-        run_cfg['experiment_name'] = run_name
-        run_cfg['run_metadata'] = {
-            'sweep_name': sweep_name,
-            'sweep_mode': 'single_feature_strength',
-            'group_index': spec['group_index'],
-            'vocab': vocab,
-            'hookpoint': hookpoint,
-            'feature_index': feature_index,
-            'strength': strength,
-        }
-
-        cfg_path = generated_cfg_dir / f'{run_name}.yaml'
-        dump_yaml(cfg_path, run_cfg)
-
-        print(f"\n[{run_idx}/{len(run_specs)}] {run_name}")
-        print(
-            f"  vocab={vocab} | hookpoint={hookpoint} | "
-            f"feature={feature_index} | strength={strength}"
-        )
-        print(f"  config: {cfg_path}")
-
-        run_started_at = time.perf_counter()
-        result = run_eval(run_cfg)
-        run_elapsed = time.perf_counter() - run_started_at
-        print(f"  finished in {run_elapsed:.1f}s")
-
-        manifest_rows.append({
-            'run_name': run_name,
-            'vocab': vocab,
-            'hookpoint': hookpoint,
-            'feature_index': feature_index,
-            'strength': strength,
-            'config_path': str(cfg_path),
-            'predictions_path': result['predictions_path'],
-            'example_metrics_path': result['example_metrics_path'],
-            'aggregate_metrics_path': result['aggregate_metrics_path'],
-        })
-
-    total_elapsed = time.perf_counter() - total_started_at
     manifest_df = pd.DataFrame(manifest_rows, columns=SINGLE_FEATURE_MANIFEST_COLUMNS)
-    write_jsonl(sweep_dir / 'manifest.jsonl', manifest_rows)
-    write_csv(sweep_dir / 'manifest.csv', manifest_df)
-    print(f"\nsweep complete: {sweep_name} in {total_elapsed:.1f}s")
-    print(f"manifest: {sweep_dir / 'manifest.csv'}")
+    manifest_jsonl = sweep_dir / 'manifest.jsonl'
+    manifest_csv = sweep_dir / 'manifest.csv'
+    write_jsonl(manifest_jsonl, manifest_rows)
+    write_csv(manifest_csv, manifest_df)
+    print(f"\nSweep finished: {sweep_name}")
+    print(f'  manifest: {manifest_csv}')
 
 
 if __name__ == '__main__':

@@ -50,16 +50,10 @@ class SparsifySteerer:
         original_dtype = hidden.dtype
         original_shape = hidden.shape
 
-        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(
-            device=self.model_device,
-            dtype=self.dtype,
-        )
-
+        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.model_device, dtype=self.dtype)
         sparse_latents = encode_sparse(self.sae, hidden_2d)
         if not isinstance(sparse_latents, SparseLatents):
-            raise TypeError(
-                f"encode_sparse(...) returned {type(sparse_latents)!r}, expected SparseLatents"
-            )
+            raise TypeError(f'encode_sparse(...) returned {type(sparse_latents)!r}, expected SparseLatents')
 
         top_acts = sparse_latents.top_acts.clone()
         top_indices = sparse_latents.top_indices.clone()
@@ -67,13 +61,10 @@ class SparsifySteerer:
         if self.config.log_feature_acts:
             stats_mask = torch.zeros_like(top_acts, dtype=torch.bool)
             for feature_idx in self.config.feature_indices:
-                stats_mask |= (top_indices == int(feature_idx))
+                stats_mask |= top_indices == int(feature_idx)
             selected = top_acts[stats_mask]
             if selected.numel() == 0:
-                self.last_feature_stats = {
-                    'mean_abs_activation': 0.0,
-                    'max_abs_activation': 0.0,
-                }
+                self.last_feature_stats = {'mean_abs_activation': 0.0, 'max_abs_activation': 0.0}
             else:
                 self.last_feature_stats = {
                     'mean_abs_activation': float(selected.abs().mean().item()),
@@ -82,7 +73,6 @@ class SparsifySteerer:
 
         if self.config.mode != 'additive':
             raise ValueError(f'Unsupported steering mode: {self.config.mode}')
-
         if self.config.apply_to != 'all_positions':
             raise ValueError(f'Unsupported apply_to mode for current repo version: {self.config.apply_to}')
 
@@ -97,13 +87,10 @@ class SparsifySteerer:
             if missing_rows.any():
                 replacement_col = torch.argmin(top_acts[missing_rows], dim=1)
                 row_idx = torch.arange(replacement_col.shape[0], device=top_acts.device)
-
                 acts_missing = top_acts[missing_rows].clone()
                 idx_missing = top_indices[missing_rows].clone()
-
                 idx_missing[row_idx, replacement_col] = feature_idx
                 acts_missing[row_idx, replacement_col] = self.config.strength
-
                 top_acts[missing_rows] = acts_missing
                 top_indices[missing_rows] = idx_missing
 
@@ -111,10 +98,7 @@ class SparsifySteerer:
             top_acts = top_acts.clamp(max=self.config.clamp_latents)
 
         recon = self.sae.decode(top_acts, top_indices)
-        recon = recon.reshape(original_shape).to(
-            device=original_device,
-            dtype=original_dtype,
-        )
+        recon = recon.reshape(original_shape).to(device=original_device, dtype=original_dtype)
 
         if self.config.normalize_reconstruction:
             in_norm = hidden.norm(dim=-1, keepdim=True).clamp_min(1e-6)

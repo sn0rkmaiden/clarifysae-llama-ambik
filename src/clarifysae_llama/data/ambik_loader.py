@@ -6,49 +6,57 @@ import pandas as pd
 
 
 REQUIRED_COLUMNS = {
-    'id', 'environment_full', 'ambiguity_type', 'ambiguous_task', 'question', 'answer',
-    'plan_for_amb_task', 'end_of_ambiguity', 'user_intent', 'plan_for_clear_task',
-    'unambiguous_direct'
+    'id',
+    'environment_full',
+    'ambiguity_type',
+    'ambiguous_task',
+    'question',
+    'answer',
+}
+
+OPTIONAL_COLUMNS = {
+    'plan_for_clear_task',
 }
 
 
-def load_ambik_no_help_dataset(path: str | Path, limit: int | None = None) -> pd.DataFrame:
-    df = pd.read_csv(path)
+def _ensure_id_column(df: pd.DataFrame) -> pd.DataFrame:
+    if 'id' in df.columns:
+        return df
+    if 'Unnamed: 0' in df.columns:
+        return df.rename(columns={'Unnamed: 0': 'id'})
+    df = df.copy()
+    df.insert(0, 'id', range(len(df)))
+    return df
 
-    # Be tolerant to common CSV export variants:
-    # 1) pandas-saved index column called "Unnamed: 0"
-    # 2) no explicit id column at all
-    if 'id' not in df.columns:
-        if 'Unnamed: 0' in df.columns:
-            df = df.rename(columns={'Unnamed: 0': 'id'})
-        else:
-            df.insert(0, 'id', range(len(df)))
+
+def load_ambik_clarification_dataset(path: str | Path, limit: int | None = None) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df = _ensure_id_column(df)
 
     missing = REQUIRED_COLUMNS.difference(df.columns)
     if missing:
         raise ValueError(f'Missing required columns in dataset: {sorted(missing)}')
 
-    amb = df[[
-        'id', 'environment_full', 'ambiguity_type', 'ambiguous_task', 'question', 'answer',
-        'plan_for_amb_task', 'end_of_ambiguity', 'user_intent'
-    ]].copy()
-
-    clear = df.copy()
-    clear['ambiguity_type'] = 'unambiguous_direct'
-    clear['ambiguous_task'] = clear['unambiguous_direct']
-    clear['plan_for_amb_task'] = clear['plan_for_clear_task']
-
-    merged = pd.concat([clear, amb], ignore_index=True)
-    merged['plan'] = merged['plan_for_amb_task']
-    merged['task'] = merged['ambiguous_task']
+    for column in OPTIONAL_COLUMNS:
+        if column not in df.columns:
+            df[column] = ''
 
     keep_cols = [
-        'id', 'environment_full', 'ambiguity_type', 'task', 'question', 'answer',
-        'plan', 'end_of_ambiguity', 'user_intent'
+        'id',
+        'environment_full',
+        'ambiguity_type',
+        'ambiguous_task',
+        'question',
+        'answer',
+        'plan_for_clear_task',
     ]
-    merged = merged[keep_cols].reset_index(drop=True)
+    result = df[keep_cols].copy().reset_index(drop=True)
 
     if limit is not None:
-        merged = merged.head(limit).copy()
+        result = result.head(limit).copy()
 
-    return merged
+    return result
+
+
+# Backward-compatible alias used by existing configs / imports.
+load_ambik_no_help_dataset = load_ambik_clarification_dataset

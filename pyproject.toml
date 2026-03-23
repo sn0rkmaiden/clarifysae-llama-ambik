@@ -19,6 +19,7 @@ dependencies = [
   "safetensors>=0.4",
   "eai-sparsify",
   "datasets>=2.20",
+  "sentence-transformers>=3.0",
 ]
 
 [tool.setuptools]

@@ -32,3 +32,10 @@ def write_csv(path: str | Path, df: pd.DataFrame) -> None:
     path = Path(path)
     ensure_dir(path.parent)
     df.to_csv(path, index=False)
+
+
+def write_json(path: str | Path, payload) -> None:
+    path = Path(path)
+    ensure_dir(path.parent)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
