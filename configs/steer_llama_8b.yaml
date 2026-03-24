@@ -1,0 +1,44 @@
+experiment_name: llama_sae_no_help
+seed: 42
+
+model:
+  name: unsloth/Llama-3.1-8B
+  backend: hf
+  torch_dtype: float16
+  device_map: auto
+  attn_implementation: null
+
+generation:
+  max_new_tokens: 96
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+
+prompting:
+  template: no_help
+
+steering:
+  enabled: true
+  method: sparsify
+  sae_repo: EleutherAI/sae-llama-3.1-8b-32x
+  hookpoint: layers.10.mlp
+  feature_indices: [12345] 
+  strength: 5.0
+  mode: additive
+  apply_to: all_positions
+  steer_generated_tokens_only: true
+  runtime:
+    normalize_reconstruction: false
+    preserve_unsteered_residual: false
+    clamp_latents: null
+    log_feature_acts: false
+
+batching:
+  batch_size: 2
+
+dataset:
+  path: data/raw/ambik/ambik_calib_100.csv
+  limit: null
+
+output:
+  root_dir: outputs

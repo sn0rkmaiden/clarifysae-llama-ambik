@@ -1,0 +1,31 @@
+experiment_name: llama_8b_baseline
+seed: 42
+
+model:
+  name: unsloth/Llama-3.1-8B
+  backend: hf
+  torch_dtype: bfloat16
+  device_map: auto
+  attn_implementation: null
+
+generation:
+  max_new_tokens: 96
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+
+prompting:
+  template: no_help
+
+steering:
+  enabled: false
+
+batching:
+  batch_size: 2
+
+dataset:
+  path: data/raw/ambik/ambik_calib_100.csv
+  limit: null
+
+output:
+  root_dir: outputs
