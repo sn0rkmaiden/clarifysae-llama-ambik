@@ -7,6 +7,7 @@ This repo is intentionally narrow:
 - one steering method: pretrained `sparsify` SAE
 - one dataset target: AmbiK
 - one evaluation path first: the `no_help` prompting setup
+- evaluation supports both the old single JSON prompt and a separated 3-stage protocol (ambiguity label, question generation, JSON compliance)
 
 ## What is included
 
@@ -40,6 +41,12 @@ data/raw/ambik/ambik_test_400.csv
 or point `dataset.path` in the config to another CSV.
 
 ## Baseline run
+
+The patched configs now default to the separated 3-stage evaluation protocol:
+1. ambiguity classification
+2. question generation (up to 3 questions)
+3. JSON compliance
+
 
 ```bash
 python -m clarifysae_llama.runners.run_eval --config configs/base_llama32_1b.yaml
@@ -156,6 +163,7 @@ The sweep manifest includes:
 
 - The steered config ships with a placeholder feature index. Replace it with a real one before using `configs/steer_llama32_1b.yaml` directly.
 - `strength: 0.0` is **not** a true no-steering baseline in this repo, because the SAE reconstruction path is still used when steering is enabled. Use `configs/base_llama32_1b.yaml` for the real baseline.
+- `steer_generated_tokens_only` is now applied in the hook itself, and `preserve_unsteered_residual` now preserves the original residual by adding only the steered SAE-space delta back to the hidden state.
 - Hookpoint-to-module mapping is implemented for Llama-style architectures and can be extended later.
 - The runner starts with the `no_help` setup because it is the cleanest path for Phase 1 replication.
 

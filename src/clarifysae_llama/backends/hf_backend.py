@@ -54,7 +54,7 @@ class HFCausalBackend:
         # Llama-style causal generation should be left-padded in batch mode.
         self.tokenizer.padding_side = 'left'
 
-        model_kwargs: dict[str, Any] = {'dtype': self.dtype}
+        model_kwargs: dict[str, Any] = {'torch_dtype': self.dtype}
         if model_cfg.get('device_map', None) is not None:
             model_kwargs['device_map'] = model_cfg['device_map']
         if model_cfg.get('attn_implementation', None) is not None:

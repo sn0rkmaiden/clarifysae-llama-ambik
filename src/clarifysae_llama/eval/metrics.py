@@ -11,6 +11,7 @@ from clarifysae_llama.eval.text_matching import best_match_score, nli_question_s
 PREFERENCE_CATEGORY = 'preferences'
 
 
+
 def normalize_questions(questions: Any) -> list[str]:
     if isinstance(questions, list):
         return [str(q).strip() for q in questions if str(q).strip()]
@@ -36,24 +37,31 @@ def compute_example_metrics(
     questions = normalize_questions(model_questions)
     gold_question = str(gold_question or '').strip()
 
+    first_similarity = 0.0
     best_similarity = 0.0
-    for question in questions:
-        score = float(best_match_score(question, gold_question, threshold=embed_threshold))
-        if score > best_similarity:
-            best_similarity = score
-
-    nli_similarity: float | None
-    resolved_nli: bool | None
-    if enable_nli:
-        nli_similarity = 0.0
+    if questions:
+        first_similarity = float(best_match_score(questions[0], gold_question, threshold=embed_threshold))
         for question in questions:
-            score = float(nli_question_similarity(question, gold_question))
-            if score > nli_similarity:
-                nli_similarity = score
-        resolved_nli = bool(nli_similarity >= float(nli_threshold))
+            score = float(best_match_score(question, gold_question, threshold=embed_threshold))
+            if score > best_similarity:
+                best_similarity = score
+
+    if enable_nli:
+        first_nli_similarity = 0.0
+        best_nli_similarity = 0.0
+        if questions:
+            first_nli_similarity = float(nli_question_similarity(questions[0], gold_question))
+            for question in questions:
+                score = float(nli_question_similarity(question, gold_question))
+                if score > best_nli_similarity:
+                    best_nli_similarity = score
+        resolved_nli_first = bool(first_nli_similarity >= float(nli_threshold))
+        resolved_nli_any = bool(best_nli_similarity >= float(nli_threshold))
     else:
-        nli_similarity = None
-        resolved_nli = None
+        first_nli_similarity = None
+        best_nli_similarity = None
+        resolved_nli_first = None
+        resolved_nli_any = None
 
     gold_ambiguous = ambiguity_type != 'unambiguous_direct'
     ambiguity_decision_correct = None
@@ -68,10 +76,17 @@ def compute_example_metrics(
         'model_questions': questions,
         'num_questions': len(questions),
         'asked_question': bool(len(questions) > 0),
+        'model_question_first_similarity': first_similarity,
         'model_question_best_similarity': best_similarity,
+        'resolved_proxy_first': bool(first_similarity >= float(embed_threshold)),
+        'resolved_proxy_any': bool(best_similarity >= float(embed_threshold)),
+        # Backward-compatible aliases.
         'resolved_proxy': bool(best_similarity >= float(embed_threshold)),
-        'model_question_best_nli_similarity': nli_similarity,
-        'resolved_nli': resolved_nli,
+        'model_question_first_nli_similarity': first_nli_similarity,
+        'model_question_best_nli_similarity': best_nli_similarity,
+        'resolved_nli_first': resolved_nli_first,
+        'resolved_nli_any': resolved_nli_any,
+        'resolved_nli': resolved_nli_any,
     }
 
 
@@ -82,10 +97,18 @@ def _mean_or_none(values: list[float]) -> float | None:
     return float(sum(values) / len(values))
 
 
+
 def _asked_question(row: dict[str, Any]) -> bool:
     if 'asked_question' in row:
         return bool(row['asked_question'])
     return int(row.get('num_questions', 0)) > 0
+
+
+
+def _safe_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 
@@ -118,11 +141,44 @@ def aggregate_metrics(
     brevity_score = float(sum(1 for row in rows if int(row['num_questions']) <= brevity_max) / total_examples)
 
     asked_rows = [row for row in rows if int(row['num_questions']) > 0]
-    overall_similarity = _mean_or_none([float(row['model_question_best_similarity']) for row in asked_rows])
-    resolved_proxy_rate = float(sum(1 for row in rows if bool(row['resolved_proxy'])) / total_examples)
+    overall_first_similarity = _mean_or_none([
+        float(row.get('model_question_first_similarity', 0.0)) for row in asked_rows
+    ])
+    overall_best_similarity = _mean_or_none([
+        float(row.get('model_question_best_similarity', 0.0)) for row in asked_rows
+    ])
+    resolved_proxy_first_rate = float(sum(1 for row in rows if bool(row.get('resolved_proxy_first'))) / total_examples)
+    resolved_proxy_any_rate = float(sum(1 for row in rows if bool(row.get('resolved_proxy_any', row.get('resolved_proxy')))) / total_examples)
 
     ambiguity_rows = [row for row in rows if row.get('ambiguity_decision_correct') is not None]
     ambiguity_decision_accuracy = _mean_or_none([1.0 if row['ambiguity_decision_correct'] else 0.0 for row in ambiguity_rows])
+
+    gold_ambiguous_rows = [row for row in rows if bool(row.get('gold_ambiguous'))]
+    gold_clear_rows = [row for row in rows if not bool(row.get('gold_ambiguous'))]
+    predicted_ambiguous_rows = [row for row in rows if row.get('predicted_ambiguous') is True]
+    predicted_clear_rows = [row for row in rows if row.get('predicted_ambiguous') is False]
+
+    ambiguity_precision = (
+        float(sum(1 for row in predicted_ambiguous_rows if bool(row.get('gold_ambiguous'))) / len(predicted_ambiguous_rows))
+        if predicted_ambiguous_rows else None
+    )
+    ambiguity_recall = (
+        float(sum(1 for row in gold_ambiguous_rows if row.get('predicted_ambiguous') is True) / len(gold_ambiguous_rows))
+        if gold_ambiguous_rows else None
+    )
+    ambiguity_specificity = (
+        float(sum(1 for row in gold_clear_rows if row.get('predicted_ambiguous') is False) / len(gold_clear_rows))
+        if gold_clear_rows else None
+    )
+
+    overasking_rate_clear = (
+        float(sum(1 for row in gold_clear_rows if _asked_question(row)) / len(gold_clear_rows))
+        if gold_clear_rows else None
+    )
+    asking_rate_ambiguous = (
+        float(sum(1 for row in gold_ambiguous_rows if _asked_question(row)) / len(gold_ambiguous_rows))
+        if gold_ambiguous_rows else None
+    )
 
     necessity_tp = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and _asked_question(row))
     necessity_fp = sum(1 for row in rows if row['ambiguity_type'] != PREFERENCE_CATEGORY and _asked_question(row))
@@ -138,7 +194,17 @@ def aggregate_metrics(
         if (necessity_tp + necessity_fn) > 0 else None
     )
     necessity_score = float(necessity_tp / n_preferences) if n_preferences > 0 else 0.0
-    overall_weighted_score = 0.5 * necessity_score + 0.4 * float(overall_similarity or 0.0) + 0.1 * brevity_score
+    overall_weighted_score = 0.5 * necessity_score + 0.4 * float(overall_best_similarity or 0.0) + 0.1 * brevity_score
+
+    json_exact_valid_rate = None
+    if 'json_exact_valid' in example_metrics.columns:
+        json_exact_valid_rate = float(sum(1 for row in rows if bool(row.get('json_exact_valid'))) / total_examples)
+    json_schema_valid_rate = None
+    if 'json_schema_valid' in example_metrics.columns:
+        json_schema_valid_rate = float(sum(1 for row in rows if bool(row.get('json_schema_valid'))) / total_examples)
+    json_recoverable_parse_rate = None
+    if 'json_recoverable_parse' in example_metrics.columns:
+        json_recoverable_parse_rate = float(sum(1 for row in rows if bool(row.get('json_recoverable_parse'))) / total_examples)
 
     overall: dict[str, Any] = {
         'total_examples': total_examples,
@@ -147,24 +213,50 @@ def aggregate_metrics(
         'enable_nli': enable_nli,
         'avg_num_questions': avg_num_questions,
         'brevity_score': brevity_score,
-        'overall_similarity_asked': overall_similarity,
-        'resolved_proxy_rate': resolved_proxy_rate,
+        'overall_first_similarity_asked': overall_first_similarity,
+        'overall_best_similarity_asked': overall_best_similarity,
+        'overall_similarity_asked': overall_best_similarity,
+        'resolved_proxy_first_rate': resolved_proxy_first_rate,
+        'resolved_proxy_any_rate': resolved_proxy_any_rate,
+        'resolved_proxy_rate': resolved_proxy_any_rate,
+        'asking_rate_ambiguous': asking_rate_ambiguous,
+        'overasking_rate_clear': overasking_rate_clear,
         'necessity_precision': necessity_precision,
         'necessity_recall': necessity_recall,
         'overall_weighted_score': overall_weighted_score,
         'ambiguity_decision_accuracy': ambiguity_decision_accuracy,
+        'ambiguity_precision': ambiguity_precision,
+        'ambiguity_recall': ambiguity_recall,
+        'ambiguity_specificity': ambiguity_specificity,
     }
 
+    if json_exact_valid_rate is not None:
+        overall['json_exact_valid_rate'] = json_exact_valid_rate
+    if json_schema_valid_rate is not None:
+        overall['json_schema_valid_rate'] = json_schema_valid_rate
+    if json_recoverable_parse_rate is not None:
+        overall['json_recoverable_parse_rate'] = json_recoverable_parse_rate
+
     if enable_nli:
-        overall_similarity_nli = _mean_or_none([
+        overall_first_similarity_nli = _mean_or_none([
+            float(row['model_question_first_nli_similarity'])
+            for row in asked_rows
+            if row.get('model_question_first_nli_similarity') is not None
+        ])
+        overall_best_similarity_nli = _mean_or_none([
             float(row['model_question_best_nli_similarity'])
             for row in asked_rows
             if row.get('model_question_best_nli_similarity') is not None
         ])
-        resolved_nli_rate = float(sum(1 for row in rows if row.get('resolved_nli') is True) / total_examples)
-        overall_weighted_score_nli = 0.5 * necessity_score + 0.4 * float(overall_similarity_nli or 0.0) + 0.1 * brevity_score
-        overall['overall_similarity_nli_asked'] = overall_similarity_nli
-        overall['resolved_nli_rate'] = resolved_nli_rate
+        resolved_nli_first_rate = float(sum(1 for row in rows if row.get('resolved_nli_first') is True) / total_examples)
+        resolved_nli_any_rate = float(sum(1 for row in rows if row.get('resolved_nli_any') is True) / total_examples)
+        overall_weighted_score_nli = 0.5 * necessity_score + 0.4 * float(overall_best_similarity_nli or 0.0) + 0.1 * brevity_score
+        overall['overall_first_similarity_nli_asked'] = overall_first_similarity_nli
+        overall['overall_best_similarity_nli_asked'] = overall_best_similarity_nli
+        overall['overall_similarity_nli_asked'] = overall_best_similarity_nli
+        overall['resolved_nli_first_rate'] = resolved_nli_first_rate
+        overall['resolved_nli_any_rate'] = resolved_nli_any_rate
+        overall['resolved_nli_rate'] = resolved_nli_any_rate
         overall['overall_weighted_score_nli'] = overall_weighted_score_nli
 
     for category, count in sorted(counts.items()):
@@ -183,33 +275,66 @@ def aggregate_metrics(
             'n_examples': len(cat_rows),
             'asked_rate': asked_rate,
             'avg_num_questions': float(sum(int(row['num_questions']) for row in cat_rows) / len(cat_rows)),
-            'mean_best_similarity_over_asked': _mean_or_none([
-                float(row['model_question_best_similarity']) for row in cat_asked
+            'mean_first_similarity_over_asked': _mean_or_none([
+                float(row.get('model_question_first_similarity', 0.0)) for row in cat_asked
             ]),
-            'resolved_proxy_rate': float(sum(1 for row in cat_rows if bool(row['resolved_proxy'])) / len(cat_rows)),
+            'mean_best_similarity_over_asked': _mean_or_none([
+                float(row.get('model_question_best_similarity', 0.0)) for row in cat_asked
+            ]),
+            'resolved_proxy_first_rate': float(sum(1 for row in cat_rows if bool(row.get('resolved_proxy_first'))) / len(cat_rows)),
+            'resolved_proxy_any_rate': float(sum(1 for row in cat_rows if bool(row.get('resolved_proxy_any', row.get('resolved_proxy')))) / len(cat_rows)),
+            'resolved_proxy_rate': float(sum(1 for row in cat_rows if bool(row.get('resolved_proxy_any', row.get('resolved_proxy')))) / len(cat_rows)),
             'ambiguity_decision_accuracy': _mean_or_none([
                 1.0 if row['ambiguity_decision_correct'] else 0.0
                 for row in cat_rows
                 if row.get('ambiguity_decision_correct') is not None
             ]),
         }
+        if 'json_exact_valid' in example_metrics.columns:
+            category_row['json_exact_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_exact_valid'))) / len(cat_rows))
+        if 'json_schema_valid' in example_metrics.columns:
+            category_row['json_schema_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_schema_valid'))) / len(cat_rows))
+        if 'json_recoverable_parse' in example_metrics.columns:
+            category_row['json_recoverable_parse_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_recoverable_parse'))) / len(cat_rows))
+
         if enable_nli:
+            category_row['mean_first_similarity_nli_over_asked'] = _mean_or_none([
+                float(row['model_question_first_nli_similarity'])
+                for row in cat_asked
+                if row.get('model_question_first_nli_similarity') is not None
+            ])
             category_row['mean_best_similarity_nli_over_asked'] = _mean_or_none([
                 float(row['model_question_best_nli_similarity'])
                 for row in cat_asked
                 if row.get('model_question_best_nli_similarity') is not None
             ])
-            category_row['resolved_nli_rate'] = float(
-                sum(1 for row in cat_rows if row.get('resolved_nli') is True) / len(cat_rows)
+            category_row['resolved_nli_first_rate'] = float(
+                sum(1 for row in cat_rows if row.get('resolved_nli_first') is True) / len(cat_rows)
             )
+            category_row['resolved_nli_any_rate'] = float(
+                sum(1 for row in cat_rows if row.get('resolved_nli_any') is True) / len(cat_rows)
+            )
+            category_row['resolved_nli_rate'] = category_row['resolved_nli_any_rate']
         category_rows.append(category_row)
 
         overall[f'asked_rate__{category}'] = category_row['asked_rate']
+        overall[f'mean_first_similarity_over_asked__{category}'] = category_row['mean_first_similarity_over_asked']
         overall[f'mean_best_similarity_over_asked__{category}'] = category_row['mean_best_similarity_over_asked']
+        overall[f'resolved_proxy_first_rate__{category}'] = category_row['resolved_proxy_first_rate']
+        overall[f'resolved_proxy_any_rate__{category}'] = category_row['resolved_proxy_any_rate']
         overall[f'resolved_proxy_rate__{category}'] = category_row['resolved_proxy_rate']
         overall[f'ambiguity_decision_accuracy__{category}'] = category_row['ambiguity_decision_accuracy']
+        if 'json_exact_valid_rate' in category_row:
+            overall[f'json_exact_valid_rate__{category}'] = category_row['json_exact_valid_rate']
+        if 'json_schema_valid_rate' in category_row:
+            overall[f'json_schema_valid_rate__{category}'] = category_row['json_schema_valid_rate']
+        if 'json_recoverable_parse_rate' in category_row:
+            overall[f'json_recoverable_parse_rate__{category}'] = category_row['json_recoverable_parse_rate']
         if enable_nli:
+            overall[f'mean_first_similarity_nli_over_asked__{category}'] = category_row.get('mean_first_similarity_nli_over_asked')
             overall[f'mean_best_similarity_nli_over_asked__{category}'] = category_row.get('mean_best_similarity_nli_over_asked')
+            overall[f'resolved_nli_first_rate__{category}'] = category_row.get('resolved_nli_first_rate')
+            overall[f'resolved_nli_any_rate__{category}'] = category_row.get('resolved_nli_any_rate')
             overall[f'resolved_nli_rate__{category}'] = category_row.get('resolved_nli_rate')
 
     return pd.DataFrame([overall]), pd.DataFrame(category_rows)

@@ -16,12 +16,17 @@ from clarifysae_llama.backends.hf_backend import HFCausalBackend
 from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.data.ambik_loader import load_ambik_clarification_dataset
-from clarifysae_llama.data.prompting import build_clarification_prompt
+from clarifysae_llama.data.prompting import (
+    build_ambiguity_prompt,
+    build_clarification_prompt,
+    build_json_compliance_prompt,
+    build_question_prompt,
+)
 from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics, normalize_questions
 from clarifysae_llama.eval.reporting import save_metric_tables
 from clarifysae_llama.utils.io import ensure_dir, write_json, write_jsonl
 from clarifysae_llama.utils.logging import log_run
-from clarifysae_llama.utils.parsing import parse_model_json
+from clarifysae_llama.utils.parsing import assess_json_output, extract_questions, parse_label_output, parse_model_json
 from clarifysae_llama.utils.seed import set_seed
 
 
@@ -49,6 +54,8 @@ def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
 def _evaluation_settings(config: dict[str, Any]) -> dict[str, Any]:
     eval_cfg = config.get('evaluation', {})
     return {
+        'protocol': str(eval_cfg.get('protocol', 'combined_json')),
+        'max_questions': int(eval_cfg.get('max_questions', 3)),
         'embed_threshold': float(eval_cfg.get('embed_threshold', 0.75)),
         'nli_threshold': eval_cfg.get('nli_threshold'),
         'enable_nli': bool(eval_cfg.get('enable_nli', False)),
@@ -69,23 +76,46 @@ def build_backend(config: dict):
 
 
 
-def build_prompts(dataset: pd.DataFrame) -> list[dict[str, Any]]:
+def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    protocol = eval_settings['protocol']
+    max_questions = int(eval_settings['max_questions'])
+
     for _, row in dataset.iterrows():
-        prompt = build_clarification_prompt(
-            description=str(row['environment_full']),
-            task=str(row['ambiguous_task']),
-        )
-        rows.append({
+        description = str(row['environment_full'])
+        task = str(row['ambiguous_task'])
+        prompt_row = {
             'id': int(row['id']),
             'ambiguity_type': str(row['ambiguity_type']),
-            'environment': str(row['environment_full']),
-            'ambiguous_instruction': str(row['ambiguous_task']),
+            'environment': description,
+            'ambiguous_instruction': task,
             'gold_question': str(row.get('question', '') or ''),
             'gold_answer': str(row.get('answer', '') or ''),
             'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
-            'prompt': prompt,
-        })
+        }
+
+        if protocol == 'separated':
+            prompt_row['ambiguity_prompt'] = build_ambiguity_prompt(description=description, task=task)
+            prompt_row['question_prompt'] = build_question_prompt(
+                description=description,
+                task=task,
+                max_questions=max_questions,
+            )
+            prompt_row['json_prompt'] = build_json_compliance_prompt(
+                description=description,
+                task=task,
+                max_questions=max_questions,
+            )
+        elif protocol == 'combined_json':
+            prompt_row['prompt'] = build_clarification_prompt(
+                description=description,
+                task=task,
+                max_questions=max_questions,
+            )
+        else:
+            raise ValueError(f"Unsupported evaluation protocol: {protocol}")
+
+        rows.append(prompt_row)
     return rows
 
 
@@ -100,6 +130,8 @@ def _print_run_header(config: dict[str, Any], n_examples: int, batch_size: int, 
     print(f"eval examples: {n_examples} | batch_size: {batch_size} | batches: {n_batches}")
     print(
         'evaluation: '
+        f"protocol={eval_settings['protocol']} "
+        f"max_questions={eval_settings['max_questions']} "
         f"embed_threshold={eval_settings['embed_threshold']} "
         f"brevity_max={eval_settings['brevity_max']} "
         f"enable_nli={eval_settings['enable_nli']}"
@@ -118,6 +150,116 @@ def _print_run_header(config: dict[str, Any], n_examples: int, batch_size: int, 
 
 
 
+def _run_generation_stage(
+    *,
+    backend,
+    prompt_rows: list[dict[str, Any]],
+    prompt_key: str,
+    output_key: str,
+    batch_size: int,
+    console_cfg: dict[str, Any],
+    experiment_name: str,
+    stage_label: str,
+) -> None:
+    iterator = range(0, len(prompt_rows), batch_size)
+    if console_cfg['show_progress']:
+        iterator = tqdm(
+            iterator,
+            desc=f"{experiment_name} | {stage_label}",
+            unit='batch',
+            dynamic_ncols=True,
+        )
+
+    for start in iterator:
+        chunk = prompt_rows[start:start + batch_size]
+        prompts = [row[prompt_key] for row in chunk]
+        predictions = backend.generate_batch(prompts)
+        for row, raw_output in zip(chunk, predictions):
+            row[output_key] = raw_output
+
+
+
+def _coerce_predicted_ambiguous(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {'true', 'false'}:
+            return lowered == 'true'
+    return None
+
+
+
+def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
+    protocol = eval_settings['protocol']
+    max_questions = int(eval_settings['max_questions'])
+    prediction_rows: list[dict[str, Any]] = []
+
+    for row in prompt_rows:
+        prediction_row = {
+            'id': row['id'],
+            'ambiguity_type': row['ambiguity_type'],
+            'environment': row['environment'],
+            'ambiguous_instruction': row['ambiguous_instruction'],
+            'gold_question': row['gold_question'],
+            'gold_answer': row['gold_answer'],
+            'gold_plan_for_clear': row['gold_plan_for_clear'],
+        }
+
+        if protocol == 'separated':
+            raw_label_output = row.get('raw_label_output', '')
+            raw_question_output = row.get('raw_question_output', '')
+            raw_json_output = row.get('raw_json_output', '')
+            predicted_ambiguous = parse_label_output(raw_label_output)
+            model_questions = normalize_questions(extract_questions(raw_question_output, max_questions=max_questions))
+            json_metrics = assess_json_output(raw_json_output)
+
+            prediction_row.update({
+                'ambiguity_prompt': row['ambiguity_prompt'],
+                'question_prompt': row['question_prompt'],
+                'json_prompt': row['json_prompt'],
+                'raw_label_output': raw_label_output,
+                'raw_question_output': raw_question_output,
+                'raw_json_output': raw_json_output,
+                'json_parsed_output': json_metrics['json_parsed_output'],
+                'json_exact_valid': json_metrics['json_exact_valid'],
+                'json_schema_valid': json_metrics['json_schema_valid'],
+                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
+            })
+        else:
+            raw_output = row.get('raw_model_output', '')
+            parsed = parse_model_json(raw_output)
+            parsed = parsed if isinstance(parsed, dict) else None
+            predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
+            model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
+            json_metrics = assess_json_output(raw_output)
+
+            prediction_row.update({
+                'prompt': row['prompt'],
+                'raw_model_output': raw_output,
+                'parsed_output': parsed,
+                'json_parsed_output': json_metrics['json_parsed_output'],
+                'json_exact_valid': json_metrics['json_exact_valid'],
+                'json_schema_valid': json_metrics['json_schema_valid'],
+                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
+            })
+
+        metrics = compute_example_metrics(
+            ambiguity_type=row['ambiguity_type'],
+            gold_question=row['gold_question'],
+            model_questions=model_questions,
+            predicted_ambiguous=predicted_ambiguous,
+            embed_threshold=eval_settings['embed_threshold'],
+            nli_threshold=eval_settings['nli_threshold'],
+            enable_nli=eval_settings['enable_nli'],
+        )
+        prediction_row.update(metrics)
+        prediction_rows.append(prediction_row)
+
+    return prediction_rows
+
+
+
 def run_eval(config: dict) -> dict[str, Any]:
     console_cfg = _configure_console(config)
     eval_settings = _evaluation_settings(config)
@@ -133,66 +275,58 @@ def run_eval(config: dict) -> dict[str, Any]:
         path=config['dataset']['path'],
         limit=config['dataset'].get('limit'),
     )
-    prompt_rows = build_prompts(dataset)
+    prompt_rows = build_prompts(dataset, eval_settings)
 
     backend = build_backend(config)
     batch_size = int(config.get('batching', {}).get('batch_size', 1))
     _print_run_header(config, n_examples=len(prompt_rows), batch_size=batch_size, eval_settings=eval_settings)
 
     started_at = time.perf_counter()
-    prediction_rows: list[dict[str, Any]] = []
-    iterator = range(0, len(prompt_rows), batch_size)
-    if console_cfg['show_progress']:
-        iterator = tqdm(
-            iterator,
-            desc=f"{experiment_name} | generating",
-            unit='batch',
-            dynamic_ncols=True,
+
+    if eval_settings['protocol'] == 'separated':
+        _run_generation_stage(
+            backend=backend,
+            prompt_rows=prompt_rows,
+            prompt_key='ambiguity_prompt',
+            output_key='raw_label_output',
+            batch_size=batch_size,
+            console_cfg=console_cfg,
+            experiment_name=experiment_name,
+            stage_label='ambiguity',
+        )
+        _run_generation_stage(
+            backend=backend,
+            prompt_rows=prompt_rows,
+            prompt_key='question_prompt',
+            output_key='raw_question_output',
+            batch_size=batch_size,
+            console_cfg=console_cfg,
+            experiment_name=experiment_name,
+            stage_label='questions',
+        )
+        _run_generation_stage(
+            backend=backend,
+            prompt_rows=prompt_rows,
+            prompt_key='json_prompt',
+            output_key='raw_json_output',
+            batch_size=batch_size,
+            console_cfg=console_cfg,
+            experiment_name=experiment_name,
+            stage_label='json',
+        )
+    else:
+        _run_generation_stage(
+            backend=backend,
+            prompt_rows=prompt_rows,
+            prompt_key='prompt',
+            output_key='raw_model_output',
+            batch_size=batch_size,
+            console_cfg=console_cfg,
+            experiment_name=experiment_name,
+            stage_label='generating',
         )
 
-    for start in iterator:
-        chunk = prompt_rows[start:start + batch_size]
-        prompts = [row['prompt'] for row in chunk]
-        predictions = backend.generate_batch(prompts)
-
-        for row, raw_output in zip(chunk, predictions):
-            parsed = parse_model_json(raw_output)
-            parsed = parsed if isinstance(parsed, dict) else {}
-            predicted_ambiguous = parsed.get('ambiguous')
-            if isinstance(predicted_ambiguous, str):
-                lowered = predicted_ambiguous.strip().lower()
-                if lowered in {'true', 'false'}:
-                    predicted_ambiguous = lowered == 'true'
-                else:
-                    predicted_ambiguous = None
-            elif not isinstance(predicted_ambiguous, bool):
-                predicted_ambiguous = None
-
-            questions_field = parsed.get('question', parsed.get('questions', []))
-            model_questions = normalize_questions(questions_field)
-            metrics = compute_example_metrics(
-                ambiguity_type=row['ambiguity_type'],
-                gold_question=row['gold_question'],
-                model_questions=model_questions,
-                predicted_ambiguous=predicted_ambiguous,
-                embed_threshold=eval_settings['embed_threshold'],
-                nli_threshold=eval_settings['nli_threshold'],
-                enable_nli=eval_settings['enable_nli'],
-            )
-
-            prediction_rows.append({
-                'id': row['id'],
-                'ambiguity_type': row['ambiguity_type'],
-                'environment': row['environment'],
-                'ambiguous_instruction': row['ambiguous_instruction'],
-                'gold_question': row['gold_question'],
-                'gold_answer': row['gold_answer'],
-                'gold_plan_for_clear': row['gold_plan_for_clear'],
-                'prompt': row['prompt'],
-                'raw_model_output': raw_output,
-                'parsed_output': parsed,
-                **metrics,
-            })
+    prediction_rows = _finalize_prediction_rows(prompt_rows, eval_settings)
 
     predictions_path = pred_dir / 'predictions.jsonl'
     results_path = pred_dir / 'results.json'
@@ -214,24 +348,37 @@ def run_eval(config: dict) -> dict[str, Any]:
     write_json(results_path, {'run_info': run_info, 'examples': prediction_rows})
 
     raw_df = pd.DataFrame(prediction_rows)
-    example_metrics = raw_df[
-        [
-            'id',
-            'ambiguity_type',
-            'gold_question',
-            'gold_answer',
-            'predicted_ambiguous',
-            'ambiguity_decision_correct',
-            'model_questions',
-            'num_questions',
-            'asked_question',
-            'model_question_best_similarity',
-            'resolved_proxy',
-            'model_question_best_nli_similarity',
-            'resolved_nli',
-            'raw_model_output',
-        ]
-    ].copy()
+    example_metric_cols = [
+        'id',
+        'ambiguity_type',
+        'gold_question',
+        'gold_answer',
+        'gold_ambiguous',
+        'predicted_ambiguous',
+        'ambiguity_decision_correct',
+        'model_questions',
+        'num_questions',
+        'asked_question',
+        'model_question_first_similarity',
+        'model_question_best_similarity',
+        'resolved_proxy_first',
+        'resolved_proxy_any',
+        'resolved_proxy',
+        'model_question_first_nli_similarity',
+        'model_question_best_nli_similarity',
+        'resolved_nli_first',
+        'resolved_nli_any',
+        'resolved_nli',
+        'json_exact_valid',
+        'json_schema_valid',
+        'json_recoverable_parse',
+    ]
+    raw_output_cols = [
+        column
+        for column in ['raw_model_output', 'raw_label_output', 'raw_question_output', 'raw_json_output']
+        if column in raw_df.columns
+    ]
+    example_metrics = raw_df[example_metric_cols + raw_output_cols].copy()
 
     aggregate_df, category_df = aggregate_metrics(
         example_metrics,

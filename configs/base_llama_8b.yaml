@@ -29,3 +29,10 @@ dataset:
 
 output:
   root_dir: outputs
+
+evaluation:
+  protocol: separated
+  max_questions: 3
+  embed_threshold: 0.75
+  enable_nli: false
+  brevity_max: 1

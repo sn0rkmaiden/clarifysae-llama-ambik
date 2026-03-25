@@ -28,8 +28,8 @@ steering:
   apply_to: all_positions
   steer_generated_tokens_only: true
   runtime:
-    normalize_reconstruction: false
-    preserve_unsteered_residual: false
+    normalize_reconstruction: true
+    preserve_unsteered_residual: true
     clamp_latents: null
     log_feature_acts: false
 
@@ -42,3 +42,10 @@ dataset:
 
 output:
   root_dir: outputs
+
+evaluation:
+  protocol: separated
+  max_questions: 3
+  embed_threshold: 0.75
+  enable_nli: false
+  brevity_max: 1
