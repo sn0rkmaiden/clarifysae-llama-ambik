@@ -1,5 +1,5 @@
 experiment_name: debug_llama32_feat11288_small_sweep
-base_config: configs/debug_steer_feat11288_20.yaml
+base_config: configs/debug/debug_steer_feat11288_20.yaml
 sweep:
   mode: single_feature_strength
   strengths: [0.01, 0.03, 0.05, 0.1]
