@@ -5,7 +5,8 @@ import re
 from typing import Any
 
 
-QUESTION_BULLET_PREFIX_RE = re.compile(r'^\s*(?:[-*•]+|\d+[\).:-]?|[A-Za-z][\).:-]?)\s*')
+# QUESTION_BULLET_PREFIX_RE = re.compile(r'^\s*(?:[-*•]+|\d+[\).:-]?|[A-Za-z][\).:-]?)\s*')
+QUESTION_BULLET_PREFIX_RE = re.compile(r'^\s*(?:[-*•]+|\d+[\).:-]?)\s*')
 
 
 def _strip_fences_and_eos(text: str) -> str:
