@@ -16,6 +16,7 @@ generation:
 
 prompting:
   template: no_help
+  use_chat_template: auto
 
 steering:
   enabled: false
