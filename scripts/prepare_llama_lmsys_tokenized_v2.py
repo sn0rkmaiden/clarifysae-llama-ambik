@@ -11,11 +11,24 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 """
+1B model:
 python scripts/prepare_llama_lmsys_tokenized_v2.py \
   --dataset lmsys/lmsys-chat-1m \
   --split train \
   --model unsloth/Llama-3.2-1B-Instruct \
   --output-dir data/processed/lmsys_llama32_1b_tokenized \
+  --conversation-column conversation \
+  --language English \
+  --max-samples 4096 \
+  --max-length 2048 \
+  --streaming
+
+8B model:
+python scripts/prepare_llama_lmsys_tokenized_v2.py \
+  --dataset lmsys/lmsys-chat-1m \
+  --split train \
+  --model unsloth/Llama-3.1-8B \
+  --output-dir data/processed/lmsys_llama31_8b_tokenized \
   --conversation-column conversation \
   --language English \
   --max-samples 4096 \
