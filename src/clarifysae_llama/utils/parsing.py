@@ -245,8 +245,8 @@ def assess_json_output(raw_output: str) -> dict[str, Any]:
     recovered = parse_model_json(raw_output)
     return {
         'json_exact_valid': strict is not None,
-        'json_schema_valid': strict is not None,
-        'json_recoverable_parse': recovered is not None,
+        'json_schema_valid': recovered is not None,
+        'json_recoverable_parse': recovered is not None and strict is None,
         'json_parsed_output': strict if strict is not None else recovered,
     }
 
