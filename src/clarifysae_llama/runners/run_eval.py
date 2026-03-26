@@ -190,6 +190,87 @@ def _coerce_predicted_ambiguous(value: Any) -> bool | None:
 
 
 
+def _compact_prediction_row(row: dict[str, Any], *, enable_nli: bool) -> dict[str, Any]:
+    keep = [
+        'id',
+        'ambiguity_type',
+        'ambiguous_instruction',
+        'gold_question',
+        'gold_ambiguous',
+        'predicted_ambiguous',
+        'ambiguity_decision_correct',
+        'model_questions',
+        'num_questions',
+        'asked_question',
+        'model_question_first_similarity',
+        'model_question_best_similarity',
+        'resolved_proxy_first',
+        'resolved_proxy_any',
+        'json_parsed_output',
+        'json_exact_valid',
+        'json_schema_valid',
+        'json_recoverable_parse',
+        'raw_model_output',
+        'raw_label_output',
+        'raw_question_output',
+        'raw_json_output',
+    ]
+    if enable_nli:
+        keep.extend([
+            'model_question_first_nli_similarity',
+            'model_question_best_nli_similarity',
+            'resolved_nli_first',
+            'resolved_nli_any',
+        ])
+
+    compact = {}
+    for key in keep:
+        if key not in row:
+            continue
+        value = row[key]
+        if value is None:
+            continue
+        compact[key] = value
+    return compact
+
+
+def _compact_prediction_rows(rows: list[dict[str, Any]], *, enable_nli: bool) -> list[dict[str, Any]]:
+    return [_compact_prediction_row(row, enable_nli=enable_nli) for row in rows]
+
+
+def _select_example_metric_columns(raw_df: pd.DataFrame, *, enable_nli: bool) -> list[str]:
+    columns = [
+        'id',
+        'ambiguity_type',
+        'gold_ambiguous',
+        'predicted_ambiguous',
+        'ambiguity_decision_correct',
+        'model_questions',
+        'num_questions',
+        'asked_question',
+        'model_question_first_similarity',
+        'model_question_best_similarity',
+        'resolved_proxy_first',
+        'resolved_proxy_any',
+        'json_exact_valid',
+        'json_schema_valid',
+        'json_recoverable_parse',
+    ]
+    if enable_nli:
+        columns.extend([
+            'model_question_first_nli_similarity',
+            'model_question_best_nli_similarity',
+            'resolved_nli_first',
+            'resolved_nli_any',
+        ])
+    columns.extend([
+        column
+        for column in ['raw_model_output', 'raw_label_output', 'raw_question_output', 'raw_json_output']
+        if column in raw_df.columns
+    ])
+    return [column for column in columns if column in raw_df.columns]
+
+
 def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
     protocol = eval_settings['protocol']
     max_questions = int(eval_settings['max_questions'])
@@ -328,13 +409,22 @@ def run_eval(config: dict) -> dict[str, Any]:
 
     prediction_rows = _finalize_prediction_rows(prompt_rows, eval_settings)
 
+    compact_prediction_rows = _compact_prediction_rows(
+        prediction_rows,
+        enable_nli=eval_settings['enable_nli'],
+    )
+
     predictions_path = pred_dir / 'predictions.jsonl'
+    predictions_full_path = pred_dir / 'predictions_full.jsonl'
     results_path = pred_dir / 'results.json'
-    write_jsonl(predictions_path, prediction_rows)
+    results_full_path = pred_dir / 'results_full.json'
+    write_jsonl(predictions_path, compact_prediction_rows)
+    write_jsonl(predictions_full_path, prediction_rows)
 
     run_info = {
         'dataset_csv': config['dataset']['path'],
         'output_json': str(results_path),
+        'output_full_json': str(results_full_path),
         'seed': int(config.get('seed', 42)),
         'num_examples': len(prompt_rows),
         'model_name': config['model']['name'],
@@ -345,40 +435,11 @@ def run_eval(config: dict) -> dict[str, Any]:
     if 'run_metadata' in config:
         run_info['run_metadata'] = config['run_metadata']
 
-    write_json(results_path, {'run_info': run_info, 'examples': prediction_rows})
+    write_json(results_path, {'run_info': run_info, 'examples': compact_prediction_rows})
+    write_json(results_full_path, {'run_info': run_info, 'examples': prediction_rows})
 
     raw_df = pd.DataFrame(prediction_rows)
-    example_metric_cols = [
-        'id',
-        'ambiguity_type',
-        'gold_question',
-        'gold_answer',
-        'gold_ambiguous',
-        'predicted_ambiguous',
-        'ambiguity_decision_correct',
-        'model_questions',
-        'num_questions',
-        'asked_question',
-        'model_question_first_similarity',
-        'model_question_best_similarity',
-        'resolved_proxy_first',
-        'resolved_proxy_any',
-        'resolved_proxy',
-        'model_question_first_nli_similarity',
-        'model_question_best_nli_similarity',
-        'resolved_nli_first',
-        'resolved_nli_any',
-        'resolved_nli',
-        'json_exact_valid',
-        'json_schema_valid',
-        'json_recoverable_parse',
-    ]
-    raw_output_cols = [
-        column
-        for column in ['raw_model_output', 'raw_label_output', 'raw_question_output', 'raw_json_output']
-        if column in raw_df.columns
-    ]
-    example_metrics = raw_df[example_metric_cols + raw_output_cols].copy()
+    example_metrics = raw_df[_select_example_metric_columns(raw_df, enable_nli=eval_settings['enable_nli'])].copy()
 
     aggregate_df, category_df = aggregate_metrics(
         example_metrics,
@@ -397,6 +458,7 @@ def run_eval(config: dict) -> dict[str, Any]:
     print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
     print(f"  predictions: {predictions_path}")
     print(f"  results json: {results_path}")
+    print(f"  full results json: {results_full_path}")
     print(f"  example metrics: {example_metrics_path}")
     print(f"  aggregate metrics: {aggregate_metrics_path}")
     print(f"  category metrics: {category_metrics_path}")
@@ -413,6 +475,7 @@ def run_eval(config: dict) -> dict[str, Any]:
         'strength': config.get('steering', {}).get('strength'),
         'predictions_path': str(predictions_path),
         'results_path': str(results_path),
+        'results_full_path': str(results_full_path),
         'example_metrics_path': str(example_metrics_path),
         'aggregate_metrics_path': str(aggregate_metrics_path),
         'category_metrics_path': str(category_metrics_path),
@@ -428,6 +491,7 @@ def run_eval(config: dict) -> dict[str, Any]:
         'experiment_name': experiment_name,
         'predictions_path': str(predictions_path),
         'results_path': str(results_path),
+        'results_full_path': str(results_full_path),
         'example_metrics_path': str(example_metrics_path),
         'aggregate_metrics_path': str(aggregate_metrics_path),
         'category_metrics_path': str(category_metrics_path),

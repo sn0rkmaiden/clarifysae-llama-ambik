@@ -44,9 +44,15 @@ class HFCausalBackend:
     def __init__(self, config: dict[str, Any]):
         model_cfg = config['model']
         generation_cfg = config['generation']
+        prompting_cfg = config.get('prompting', {})
 
         self.model_name = model_cfg['name']
         self.dtype = _resolve_torch_dtype(model_cfg.get('torch_dtype', 'bfloat16'))
+        self.chat_template_mode = prompting_cfg.get('use_chat_template', 'auto')
+        self.system_prompt = prompting_cfg.get(
+            'system_prompt',
+            'You are a careful assistant. Follow the user instruction exactly and return only the requested output format.',
+        )
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self.tokenizer.pad_token is None:
@@ -69,6 +75,39 @@ class HFCausalBackend:
         model_device = next(self.model.parameters()).device
         return {k: v.to(model_device) for k, v in tokenized.items()}
 
+    def _should_use_chat_template(self) -> bool:
+        mode = self.chat_template_mode
+        if isinstance(mode, bool):
+            requested = mode
+        else:
+            lowered = str(mode).strip().lower()
+            if lowered in {'true', '1', 'yes', 'on'}:
+                requested = True
+            elif lowered in {'false', '0', 'no', 'off'}:
+                requested = False
+            else:
+                requested = bool(getattr(self.tokenizer, 'chat_template', None)) and any(
+                    token in self.model_name.lower() for token in ('instruct', 'chat')
+                )
+        return requested and bool(getattr(self.tokenizer, 'chat_template', None))
+
+    def _format_prompt(self, prompt: str) -> str:
+        if not self._should_use_chat_template():
+            return prompt
+
+        messages = []
+        if self.system_prompt:
+            messages.append({'role': 'system', 'content': self.system_prompt})
+        messages.append({'role': 'user', 'content': prompt})
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def _format_prompts(self, prompts: list[str]) -> list[str]:
+        return [self._format_prompt(prompt) for prompt in prompts]
+
     @staticmethod
     def _decode_new_tokens(tokenizer, sequence: torch.Tensor, prompt_width: int) -> str:
         continuation_ids = sequence[int(prompt_width):]
@@ -80,6 +119,7 @@ class HFCausalBackend:
 
     @torch.inference_mode()
     def generate(self, prompt: str) -> str:
+        prompt = self._format_prompt(prompt)
         inputs = self.tokenizer(prompt, return_tensors='pt')
         inputs = self._inputs_to_model_device(inputs)
         output = self.model.generate(**inputs, **self.generation_kwargs)
@@ -88,6 +128,7 @@ class HFCausalBackend:
 
     @torch.inference_mode()
     def generate_batch(self, prompts: list[str]) -> list[str]:
+        prompts = self._format_prompts(prompts)
         inputs = self.tokenizer(prompts, return_tensors='pt', padding=True, truncation=True)
         inputs = self._inputs_to_model_device(inputs)
         outputs = self.model.generate(**inputs, **self.generation_kwargs)

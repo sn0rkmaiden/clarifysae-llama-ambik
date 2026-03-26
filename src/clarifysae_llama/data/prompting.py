@@ -13,59 +13,47 @@ def _base_context(description: str, task: str) -> str:
 
 LABEL_TEMPLATE = (
     '{context}'
-    'Decide whether this task is ambiguous.\n\n'
-    'Answer with exactly one word:\n'
-    '- AMBIGUOUS\n'
-    '- CLEAR\n'
+    'Determine whether the task is ambiguous.\n'
+    'Reply with exactly one word: AMBIGUOUS or CLEAR.\n\n'
+    'Answer:'
 )
 
 
 QUESTION_TEMPLATE = (
     '{context}'
     'If the task is ambiguous, ask up to {max_questions} short clarifying questions that would help you perform it correctly.\n'
-    'If the task is not ambiguous, output NONE.\n\n'
-    'Formatting rules:\n'
-    '- Output only questions or NONE.\n'
-    '- Put each question on its own line.\n'
-    '- Do not output JSON.\n'
-    '- Do not output explanations.\n'
-    '- Ask at most {max_questions} questions.\n'
+    'If the task is clear, output NONE.\n\n'
+    'Return only the answer itself.\n'
+    'Use one question per line.\n'
+    'Do not output explanations, bullets, numbering, JSON, or repeated instructions.\n'
+    'Ask at most {max_questions} questions.\n\n'
+    'Answer:\n'
 )
 
 
 JSON_TEMPLATE = (
     '{context}'
-    'Decide whether this task is ambiguous.\n'
-    'If it is ambiguous, generate up to {max_questions} clarifying questions that would help you perform it correctly.\n\n'
-    'Return your final answer only as a JSON object in the following format:\n\n'
+    'Determine whether the task is ambiguous and, if it is, generate up to {max_questions} clarifying questions that would help you perform it correctly.\n\n'
+    'Return only one valid JSON object with exactly these keys: "ambiguous" and "question".\n'
+    'Use this schema exactly:\n'
     '{{\n'
     '  "ambiguous": true or false,\n'
-    '  "question": ["question 1", "question 2", ...]\n'
+    '  "question": ["question 1", "question 2"]\n'
     '}}\n\n'
-    'Formatting rules:\n'
-    '- Always output exactly one JSON object.\n'
-    '- If the task is not ambiguous, use "ambiguous": false and "question": [].\n'
-    '- If the task is ambiguous, use "ambiguous": true and provide between 1 and {max_questions} questions.\n'
-    '- Never output explanations or text outside the JSON.\n'
-    '- If unsure, make your best judgment and still output a valid JSON.\n\n'
-    'Example:\n'
-    'Task: "Put the red cup away."\n'
-    'Output:\n'
-    '{{\n'
-    '  "ambiguous": true,\n'
-    '  "question": ["Where should I put the red cup?", "In which drawer or on the counter?"]\n'
-    '}}\n'
+    'Rules:\n'
+    '- If the task is clear, output {{"ambiguous": false, "question": []}}.\n'
+    '- If the task is ambiguous, output {{"ambiguous": true, "question": [...]}} with between 1 and {max_questions} questions.\n'
+    '- Do not output markdown, code fences, examples, explanations, or any text before or after the JSON.\n'
+    '- Do not repeat the task or the instructions.\n\n'
+    'Answer:\n'
 )
 
 
-# Backward-compatible alias for the old single-prompt path.
 CLARIFICATION_TEMPLATE = JSON_TEMPLATE
-
 
 
 def build_ambiguity_prompt(description: str, task: str) -> str:
     return LABEL_TEMPLATE.format(context=_base_context(description, task))
-
 
 
 def build_question_prompt(description: str, task: str, max_questions: int = 3) -> str:
@@ -75,13 +63,11 @@ def build_question_prompt(description: str, task: str, max_questions: int = 3) -
     )
 
 
-
 def build_json_compliance_prompt(description: str, task: str, max_questions: int = 3) -> str:
     return JSON_TEMPLATE.format(
         context=_base_context(description, task),
         max_questions=max_questions,
     )
-
 
 
 def build_clarification_prompt(description: str, task: str, max_questions: int = 3) -> str:
