@@ -210,10 +210,6 @@ def _compact_prediction_row(row: dict[str, Any], *, enable_nli: bool) -> dict[st
         'json_exact_valid',
         'json_schema_valid',
         'json_recoverable_parse',
-        'raw_model_output',
-        'raw_label_output',
-        'raw_question_output',
-        'raw_json_output',
     ]
     if enable_nli:
         keep.extend([
@@ -263,11 +259,6 @@ def _select_example_metric_columns(raw_df: pd.DataFrame, *, enable_nli: bool) ->
             'resolved_nli_first',
             'resolved_nli_any',
         ])
-    columns.extend([
-        column
-        for column in ['raw_model_output', 'raw_label_output', 'raw_question_output', 'raw_json_output']
-        if column in raw_df.columns
-    ])
     return [column for column in columns if column in raw_df.columns]
 
 
@@ -288,20 +279,18 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: 
         }
 
         if protocol == 'separated':
-            raw_label_output = row.get('raw_label_output', '')
-            raw_question_output = row.get('raw_question_output', '')
             raw_json_output = row.get('raw_json_output', '')
-            predicted_ambiguous = parse_label_output(raw_label_output)
-            model_questions = normalize_questions(extract_questions(raw_question_output, max_questions=max_questions))
             json_metrics = assess_json_output(raw_json_output)
+            json_obj = json_metrics.get('json_parsed_output') or {}
+            
+            # Extract questions and ambiguous prediction from JSON (stage 3)
+            model_questions = normalize_questions(json_obj.get('question', []))
+            predicted_ambiguous = _coerce_predicted_ambiguous(json_obj.get('ambiguous'))
 
             prediction_row.update({
                 'ambiguity_prompt': row['ambiguity_prompt'],
                 'question_prompt': row['question_prompt'],
                 'json_prompt': row['json_prompt'],
-                'raw_label_output': raw_label_output,
-                'raw_question_output': raw_question_output,
-                'raw_json_output': raw_json_output,
                 'json_parsed_output': json_metrics['json_parsed_output'],
                 'json_exact_valid': json_metrics['json_exact_valid'],
                 'json_schema_valid': json_metrics['json_schema_valid'],
