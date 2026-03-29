@@ -44,7 +44,7 @@ output:
   root_dir: outputs
 
 evaluation:
-  protocol: separated
+  protocol: combined_json
   max_questions: 3
   embed_threshold: 0.75
   enable_nli: false

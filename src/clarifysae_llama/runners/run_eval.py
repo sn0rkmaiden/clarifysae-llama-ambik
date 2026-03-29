@@ -17,16 +17,13 @@ from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.data.ambik_loader import load_ambik_clarification_dataset
 from clarifysae_llama.data.prompting import (
-    build_ambiguity_prompt,
     build_clarification_prompt,
-    build_json_compliance_prompt,
-    build_question_prompt,
 )
 from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics, normalize_questions
 from clarifysae_llama.eval.reporting import save_metric_tables
 from clarifysae_llama.utils.io import ensure_dir, write_json, write_jsonl
 from clarifysae_llama.utils.logging import log_run
-from clarifysae_llama.utils.parsing import assess_json_output, extract_questions, parse_label_output, parse_model_json
+from clarifysae_llama.utils.parsing import assess_json_output, parse_model_json
 from clarifysae_llama.utils.seed import set_seed
 
 
@@ -78,7 +75,6 @@ def build_backend(config: dict):
 
 def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    protocol = eval_settings['protocol']
     max_questions = int(eval_settings['max_questions'])
 
     for _, row in dataset.iterrows():
@@ -92,29 +88,12 @@ def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[
             'gold_question': str(row.get('question', '') or ''),
             'gold_answer': str(row.get('answer', '') or ''),
             'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
+            'prompt': build_clarification_prompt(
+                description=description,
+                task=task,
+                max_questions=max_questions,
+            ),
         }
-
-        if protocol == 'separated':
-            prompt_row['ambiguity_prompt'] = build_ambiguity_prompt(description=description, task=task)
-            prompt_row['question_prompt'] = build_question_prompt(
-                description=description,
-                task=task,
-                max_questions=max_questions,
-            )
-            prompt_row['json_prompt'] = build_json_compliance_prompt(
-                description=description,
-                task=task,
-                max_questions=max_questions,
-            )
-        elif protocol == 'combined_json':
-            prompt_row['prompt'] = build_clarification_prompt(
-                description=description,
-                task=task,
-                max_questions=max_questions,
-            )
-        else:
-            raise ValueError(f"Unsupported evaluation protocol: {protocol}")
-
         rows.append(prompt_row)
     return rows
 
@@ -263,8 +242,6 @@ def _select_example_metric_columns(raw_df: pd.DataFrame, *, enable_nli: bool) ->
 
 
 def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
-    protocol = eval_settings['protocol']
-    max_questions = int(eval_settings['max_questions'])
     prediction_rows: list[dict[str, Any]] = []
 
     for row in prompt_rows:
@@ -278,41 +255,22 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: 
             'gold_plan_for_clear': row['gold_plan_for_clear'],
         }
 
-        if protocol == 'separated':
-            raw_json_output = row.get('raw_json_output', '')
-            json_metrics = assess_json_output(raw_json_output)
-            json_obj = json_metrics.get('json_parsed_output') or {}
-            
-            # Extract questions and ambiguous prediction from JSON (stage 3)
-            model_questions = normalize_questions(json_obj.get('question', []))
-            predicted_ambiguous = _coerce_predicted_ambiguous(json_obj.get('ambiguous'))
+        raw_output = row.get('raw_model_output', '')
+        parsed = parse_model_json(raw_output)
+        parsed = parsed if isinstance(parsed, dict) else None
+        predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
+        model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
+        json_metrics = assess_json_output(raw_output)
 
-            prediction_row.update({
-                'ambiguity_prompt': row['ambiguity_prompt'],
-                'question_prompt': row['question_prompt'],
-                'json_prompt': row['json_prompt'],
-                'json_parsed_output': json_metrics['json_parsed_output'],
-                'json_exact_valid': json_metrics['json_exact_valid'],
-                'json_schema_valid': json_metrics['json_schema_valid'],
-                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
-            })
-        else:
-            raw_output = row.get('raw_model_output', '')
-            parsed = parse_model_json(raw_output)
-            parsed = parsed if isinstance(parsed, dict) else None
-            predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
-            model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
-            json_metrics = assess_json_output(raw_output)
-
-            prediction_row.update({
-                'prompt': row['prompt'],
-                'raw_model_output': raw_output,
-                'parsed_output': parsed,
-                'json_parsed_output': json_metrics['json_parsed_output'],
-                'json_exact_valid': json_metrics['json_exact_valid'],
-                'json_schema_valid': json_metrics['json_schema_valid'],
-                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
-            })
+        prediction_row.update({
+            'prompt': row['prompt'],
+            'raw_model_output': raw_output,
+            'parsed_output': parsed,
+            'json_parsed_output': json_metrics['json_parsed_output'],
+            'json_exact_valid': json_metrics['json_exact_valid'],
+            'json_schema_valid': json_metrics['json_schema_valid'],
+            'json_recoverable_parse': json_metrics['json_recoverable_parse'],
+        })
 
         metrics = compute_example_metrics(
             ambiguity_type=row['ambiguity_type'],
@@ -353,48 +311,16 @@ def run_eval(config: dict) -> dict[str, Any]:
 
     started_at = time.perf_counter()
 
-    if eval_settings['protocol'] == 'separated':
-        _run_generation_stage(
-            backend=backend,
-            prompt_rows=prompt_rows,
-            prompt_key='ambiguity_prompt',
-            output_key='raw_label_output',
-            batch_size=batch_size,
-            console_cfg=console_cfg,
-            experiment_name=experiment_name,
-            stage_label='ambiguity',
-        )
-        _run_generation_stage(
-            backend=backend,
-            prompt_rows=prompt_rows,
-            prompt_key='question_prompt',
-            output_key='raw_question_output',
-            batch_size=batch_size,
-            console_cfg=console_cfg,
-            experiment_name=experiment_name,
-            stage_label='questions',
-        )
-        _run_generation_stage(
-            backend=backend,
-            prompt_rows=prompt_rows,
-            prompt_key='json_prompt',
-            output_key='raw_json_output',
-            batch_size=batch_size,
-            console_cfg=console_cfg,
-            experiment_name=experiment_name,
-            stage_label='json',
-        )
-    else:
-        _run_generation_stage(
-            backend=backend,
-            prompt_rows=prompt_rows,
-            prompt_key='prompt',
-            output_key='raw_model_output',
-            batch_size=batch_size,
-            console_cfg=console_cfg,
-            experiment_name=experiment_name,
-            stage_label='generating',
-        )
+    _run_generation_stage(
+        backend=backend,
+        prompt_rows=prompt_rows,
+        prompt_key='prompt',
+        output_key='raw_model_output',
+        batch_size=batch_size,
+        console_cfg=console_cfg,
+        experiment_name=experiment_name,
+        stage_label='generating',
+    )
 
     prediction_rows = _finalize_prediction_rows(prompt_rows, eval_settings)
 
