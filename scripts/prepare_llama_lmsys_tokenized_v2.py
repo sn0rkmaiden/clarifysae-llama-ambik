@@ -23,11 +23,23 @@ python scripts/prepare_llama_lmsys_tokenized_v2.py \
   --max-length 2048 \
   --streaming
 
-8B model:
+8B model (base):
 python scripts/prepare_llama_lmsys_tokenized_v2.py \
   --dataset lmsys/lmsys-chat-1m \
   --split train \
   --model unsloth/Llama-3.1-8B \
+  --output-dir data/processed/lmsys_llama31_8b_tokenized \
+  --conversation-column conversation \
+  --language English \
+  --max-samples 4096 \
+  --max-length 2048 \
+  --streaming
+
+8B model (instruct):
+python scripts/prepare_llama_lmsys_tokenized_v2.py \
+  --dataset lmsys/lmsys-chat-1m \
+  --split train \
+  --model unsloth/Llama-3.1-8B-Instruct \
   --output-dir data/processed/lmsys_llama31_8b_tokenized \
   --conversation-column conversation \
   --language English \
