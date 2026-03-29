@@ -1,4 +1,4 @@
-experiment_name: llama_baseline
+experiment_name: llama_1b_instruct_baseline_900
 seed: 42
 
 model:
@@ -25,7 +25,7 @@ batching:
   batch_size: 2
 
 dataset:
-  path: data/raw/ambik/ambik_calib_100.csv
+  path: data/raw/ambik/ambik_test_900.csv
   limit: null
 
 output:
