@@ -1,0 +1,40 @@
+experiment_name: llama_8b_vocab_discovery_layer29mlp
+seed: 42
+
+model:
+  name: unsloth/Llama-3.1-8B-Instruct
+  backend: hf
+  torch_dtype: float16
+  device_map: auto
+
+output_scoring:
+  name: Q_topk50
+  root_dir: outputs/discovery
+  feature_scores_path: outputs/discovery/llama_8b_vocab_discovery_layer29mlp/Q/feature_scores.pt
+  feature_score_key: scores
+  top_k_features: 50
+  # feature_indices: [1, 2, 3]  # optional manual override
+
+  sae_repo: EleutherAI/sae-llama-3.1-8b-32x
+  hookpoint: layers.29.mlp
+
+  prompt: "In my experience,"
+  steering_strength: 6.0
+  top_k_tokens: 10
+
+  tokenization:
+    max_length: 256
+    stride: 256
+    add_special_tokens: false
+    kind: pretokenized
+
+  batching:
+    token_batch_size: 8
+
+  amax_dataset:
+    source: parquet
+    path: data/processed/lmsys_llama31_8b_tokenized/train.parquet
+    text_column: tokens
+    n_texts: 4096
+
+
