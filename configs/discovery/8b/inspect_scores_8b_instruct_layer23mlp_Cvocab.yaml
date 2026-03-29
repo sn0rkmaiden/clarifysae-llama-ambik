@@ -1,0 +1,13 @@
+inspection:
+  feature_score_tables:
+    - name: C
+      path: outputs/discovery/llama_8b_vocab_discovery_layer23mlp/C/feature_scores.csv
+    - name: Q
+      path: outputs/discovery/llama_8b_vocab_discovery_layer23mlp/Q/feature_scores.csv
+  output_score_table:
+    name: output
+    path: outputs/discovery/llama_8b_vocab_discovery_layer23mlp/output_scores/C_topk50/output_scores_8b_instruct_layer23mlp_Cvocab.csv
+  sort_by: output_output_score
+  ascending: false
+  top_n: 50
+  output_dir: outputs/discovery/inspection_8b_instruct_layer23mlp_Cvocab
