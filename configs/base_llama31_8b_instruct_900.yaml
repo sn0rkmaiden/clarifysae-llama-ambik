@@ -1,4 +1,4 @@
-experiment_name: debug_base_llama31_8b_20
+experiment_name: base_llama31_8b_instruct_900
 seed: 42
 
 model:
