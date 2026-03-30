@@ -1,4 +1,4 @@
-experiment_name: llama_8b_vocab_discovery_layer23mlp_base
+experiment_name: llama_8b_vocab_discovery_layer29mlp_base
 seed: 42
 
 model:
@@ -11,7 +11,7 @@ model:
 # Point the vocabulary paths at your C and Q JSON files.
 discovery:
   sae_repo: EleutherAI/sae-llama-3.1-8b-32x
-  hookpoint: layers.23.mlp
+  hookpoint: layers.29.mlp
 
   vocab_paths:
     C: data/vocabs/clarifying_vocab.json
