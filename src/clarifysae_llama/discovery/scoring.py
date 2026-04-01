@@ -84,8 +84,19 @@ class SparseRollingStats:
 
         flat_indices = top_indices.reshape(-1, top_indices.shape[-1])
         flat_acts = top_acts.reshape(-1, top_acts.shape[-1])
-        selected_indices = flat_indices[flat_mask].reshape(-1)
+        selected_indices = flat_indices[flat_mask].reshape(-1).long()
         selected_acts = flat_acts[flat_mask].reshape(-1).to(self.dtype)
+
+        if selected_indices.numel() > 0:
+            min_idx = int(selected_indices.min().item())
+            max_idx = int(selected_indices.max().item())
+            if min_idx < 0 or max_idx >= self.num_features:
+                raise ValueError(
+                    f"SAE feature index out of bounds: min={min_idx}, max={max_idx}, "
+                    f"num_features={self.num_features}. "
+                    "This usually means the SAE latent dimension was inferred incorrectly."
+                )
+
         feature_sum.scatter_add_(0, selected_indices, selected_acts)
         return feature_sum, count
 
