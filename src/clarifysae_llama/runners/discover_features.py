@@ -117,6 +117,10 @@ def _move_sae_to_device_dtype(sae: Any, device: torch.device, dtype: torch.dtype
     return sae
 
 
+from pathlib import Path
+from huggingface_hub import hf_hub_download, snapshot_download
+from sparsify import Sae
+
 def _load_sae(discovery_cfg: dict[str, Any], device: torch.device, dtype: torch.dtype):
     loader = discovery_cfg.get("loader", "sparsify")
     loader_name = str(loader).strip().lower().replace("-", "_")
@@ -134,6 +138,7 @@ def _load_sae(discovery_cfg: dict[str, Any], device: torch.device, dtype: torch.
             raise ValueError(
                 "discovery.sae_file is required when discovery.loader='dictionary_learning'."
             )
+
         try:
             from dictionary_learning import utils as dl_utils
         except ImportError as exc:
@@ -142,11 +147,23 @@ def _load_sae(discovery_cfg: dict[str, Any], device: torch.device, dtype: torch.
                 "Install it with: pip install dictionary-learning"
             ) from exc
 
-        local_path = hf_hub_download(
+        # Accept either:
+        #   sae_file: resid_post_layer_19/trainer_1/ae.pt
+        # or
+        #   sae_file: resid_post_layer_19/trainer_1
+        if sae_file.endswith(".pt"):
+            trainer_subdir = str(Path(sae_file).parent)
+        else:
+            trainer_subdir = sae_file.rstrip("/")
+
+        # Download the whole trainer directory so config.json is present next to ae.pt.
+        snapshot_root = snapshot_download(
             repo_id=discovery_cfg["sae_repo"],
-            filename=sae_file,
+            allow_patterns=[f"{trainer_subdir}/*"],
         )
-        sae, _cfg = dl_utils.load_dictionary(local_path, device=str(device))
+        trainer_dir = Path(snapshot_root) / trainer_subdir
+
+        sae, _cfg = dl_utils.load_dictionary(str(trainer_dir), device=str(device))
         return _move_sae_to_device_dtype(sae, device=device, dtype=dtype)
 
     raise ValueError(

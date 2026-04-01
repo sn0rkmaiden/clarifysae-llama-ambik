@@ -10,7 +10,7 @@ model:
 discovery:
   loader: dictionary_learning
   sae_repo: andyrdt/saes-llama-3.1-8b-instruct
-  sae_file: resid_post_layer_19/trainer_1/ae.pt
+  sae_file: resid_post_layer_19/trainer_1
   hookpoint: model.layers.19
   module_path: model.layers.19
 

@@ -70,6 +70,9 @@ def move_sae_to_device_dtype(sae: Any, device: torch.device, dtype: torch.dtype)
     return sae
 
 
+from pathlib import Path
+from huggingface_hub import hf_hub_download, snapshot_download
+
 def load_sae(
     *,
     loader: str,
@@ -98,8 +101,18 @@ def load_sae(
                 "Install it with: pip install dictionary-learning"
             ) from exc
 
-        local_path = hf_hub_download(repo_id=sae_repo, filename=sae_file)
-        sae, _config = dl_utils.load_dictionary(local_path, device=str(device))
+        if sae_file.endswith(".pt"):
+            trainer_subdir = str(Path(sae_file).parent)
+        else:
+            trainer_subdir = sae_file.rstrip("/")
+
+        snapshot_root = snapshot_download(
+            repo_id=sae_repo,
+            allow_patterns=[f"{trainer_subdir}/*"],
+        )
+        trainer_dir = Path(snapshot_root) / trainer_subdir
+
+        sae, _config = dl_utils.load_dictionary(str(trainer_dir), device=str(device))
         return move_sae_to_device_dtype(sae, device=device, dtype=dtype)
 
     raise ValueError(
