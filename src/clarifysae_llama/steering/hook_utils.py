@@ -1,4 +1,3 @@
-# src/clarifysae_llama/steering/hook_utils.py
 from __future__ import annotations
 
 
@@ -20,11 +19,11 @@ def normalize_hookpoint_to_module_path(hookpoint: str) -> str:
     if hp == "model.embed_tokens":
         return hp
 
-    # Apart-style repos already include the model prefix.
+    # Already fully qualified, e.g. "model.layers.10"
     if hp.startswith("model."):
         return hp
 
-    # EleutherAI sparsify repos usually use layers.X or layers.X.mlp
+    # sparsify / EleutherAI style, e.g. "layers.23.mlp"
     if hp.startswith("layers."):
         return f"model.{hp}"
 
@@ -33,3 +32,8 @@ def normalize_hookpoint_to_module_path(hookpoint: str) -> str:
 
 def resolve_module_path(hookpoint: str, module_path: str | None = None) -> str:
     return module_path or normalize_hookpoint_to_module_path(hookpoint)
+
+
+# Backward-compatibility for old imports.
+def map_sae_hookpoint_to_hf_module_path(hookpoint: str) -> str:
+    return normalize_hookpoint_to_module_path(hookpoint)
