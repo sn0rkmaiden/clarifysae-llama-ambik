@@ -2,11 +2,11 @@ experiment_name: llama32_1b_single_feature_strength_sweep
 base_config: configs/steer_llama32_1b.yaml
 sweep:
   mode: single_feature_strength
-  strengths: [1.0, 3.0, 5.0, 10.0]
+  strengths: [-3.0, -1.0, 1.0, 3.0, 5.0, 10.0]
   groups:
     - vocab: C
       hookpoint: layers.10.mlp
-      features: [12345, 23456]
+      features: [11288, 93503, 92264, 1442, 122067, 91703, 123600]
     - vocab: Q
-      hookpoint: layers.12.mlp
-      features: [34567]
+      hookpoint: layers.10.mlp
+      features: [33817, 11288, 5409, 27250, 66389, 26305]
