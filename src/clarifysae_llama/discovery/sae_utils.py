@@ -114,3 +114,17 @@ def compute_a_max_from_sparse(
         if value > current[idx].item():
             current[idx] = value
     return current
+
+
+def decode_from_sparse(sae: Any, sparse: SparseLatents, dtype: torch.dtype | None = None) -> torch.Tensor:
+    try:
+        # sparsify-style decode(top_acts, top_indices)
+        return sae.decode(sparse.top_acts, sparse.top_indices)
+    except TypeError:
+        # dictionary_learning-style decode(dense_latents)
+        dense = sparse_to_dense(
+            sparse,
+            num_latents=get_num_latents(sae),
+            dtype=dtype or sparse.top_acts.dtype,
+        )
+        return sae.decode(dense)

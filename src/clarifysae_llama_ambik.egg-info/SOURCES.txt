@@ -15,6 +15,7 @@ src/clarifysae_llama/discovery/scoring.py
 src/clarifysae_llama/discovery/vocab.py
 src/clarifysae_llama/eval/metrics.py
 src/clarifysae_llama/eval/reporting.py
+src/clarifysae_llama/eval/text_matching.py
 src/clarifysae_llama/runners/compute_output_scores.py
 src/clarifysae_llama/runners/discover_features.py
 src/clarifysae_llama/runners/inspect_scores.py
@@ -28,6 +29,7 @@ src/clarifysae_llama/steering/hook_utils.py
 src/clarifysae_llama/steering/sparsify_steerer.py
 src/clarifysae_llama/utils/io.py
 src/clarifysae_llama/utils/logging.py
+src/clarifysae_llama/utils/parsing.py
 src/clarifysae_llama/utils/seed.py
 src/clarifysae_llama_ambik.egg-info/PKG-INFO
 src/clarifysae_llama_ambik.egg-info/SOURCES.txt
