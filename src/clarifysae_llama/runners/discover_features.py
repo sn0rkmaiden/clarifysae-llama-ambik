@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import torch
-from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -18,10 +19,17 @@ from clarifysae_llama.discovery.dataset import load_token_chunks
 from clarifysae_llama.discovery.scoring import SparseRollingStats
 from clarifysae_llama.discovery.sae_utils import encode_sparse, get_num_latents
 from clarifysae_llama.discovery.vocab import load_vocab_groups
-from clarifysae_llama.steering.hook_utils import get_submodule_by_path, resolve_module_path
 from clarifysae_llama.utils.io import ensure_dir
 from clarifysae_llama.utils.logging import log_run
 from clarifysae_llama.utils.seed import set_seed
+
+try:
+    from clarifysae_llama.steering.hook_utils import get_submodule_by_path, resolve_module_path
+except ImportError:
+    from clarifysae_llama.steering.hook_utils import get_submodule_by_path, map_sae_hookpoint_to_hf_module_path
+
+    def resolve_module_path(hookpoint: str, module_path: str | None = None) -> str:
+        return module_path or map_sae_hookpoint_to_hf_module_path(hookpoint)
 
 
 def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
@@ -35,8 +43,43 @@ def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
     return mapping[dtype_name]
 
 
+def _check_free_disk_space(path: Path, min_free_gb: float = 2.0) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(path)
+    free_gb = usage.free / (1024 ** 3)
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"Not enough free disk space in {path}. "
+            f"Free: {free_gb:.2f} GB, required at least: {min_free_gb:.2f} GB."
+        )
+
+
+def _warn_if_running_without_cuda(model) -> None:
+    try:
+        has_cuda_param = any(
+            p.device.type == "cuda"
+            for p in model.parameters()
+            if p.device.type != "meta"
+        )
+    except Exception:
+        has_cuda_param = False
+
+    if not torch.cuda.is_available() or not has_cuda_param:
+        print(
+            "[WARN] Model does not appear to be running on CUDA. "
+            "This run will likely be much slower. "
+            "Check your NVIDIA driver / PyTorch CUDA compatibility."
+        )
+
+
 class HiddenActivationExtractor:
-    def __init__(self, model, hookpoint: str | None = None, target_module=None, module_path: str | None = None):
+    def __init__(
+        self,
+        model,
+        hookpoint: str | None = None,
+        target_module=None,
+        module_path: str | None = None,
+    ):
         self.model = model
         if target_module is not None:
             self.target_module = target_module
@@ -95,13 +138,19 @@ def _load_model_and_tokenizer(model_cfg: dict[str, Any]):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+    model_kwargs: dict[str, Any] = {"dtype": dtype}
     if model_cfg.get("device_map", None) is not None:
         model_kwargs["device_map"] = model_cfg["device_map"]
     if model_cfg.get("attn_implementation", None) is not None:
         model_kwargs["attn_implementation"] = model_cfg["attn_implementation"]
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    except TypeError:
+        model_kwargs.pop("dtype", None)
+        model_kwargs["torch_dtype"] = dtype
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
     model.eval()
     return model, tokenizer, dtype
 
@@ -116,10 +165,6 @@ def _move_sae_to_device_dtype(sae: Any, device: torch.device, dtype: torch.dtype
         sae.eval()
     return sae
 
-
-from pathlib import Path
-from huggingface_hub import hf_hub_download, snapshot_download
-from sparsify import Sae
 
 def _load_sae(discovery_cfg: dict[str, Any], device: torch.device, dtype: torch.dtype):
     loader = discovery_cfg.get("loader", "sparsify")
@@ -147,16 +192,11 @@ def _load_sae(discovery_cfg: dict[str, Any], device: torch.device, dtype: torch.
                 "Install it with: pip install dictionary-learning"
             ) from exc
 
-        # Accept either:
-        #   sae_file: resid_post_layer_19/trainer_1/ae.pt
-        # or
-        #   sae_file: resid_post_layer_19/trainer_1
         if sae_file.endswith(".pt"):
             trainer_subdir = str(Path(sae_file).parent)
         else:
             trainer_subdir = sae_file.rstrip("/")
 
-        # Download the whole trainer directory so config.json is present next to ae.pt.
         snapshot_root = snapshot_download(
             repo_id=discovery_cfg["sae_repo"],
             allow_patterns=[f"{trainer_subdir}/*"],
@@ -242,11 +282,21 @@ def run_discovery(config: dict[str, Any]) -> None:
     set_seed(int(config.get("seed", 42)))
     experiment_name = config["experiment_name"]
     discovery_cfg = config["discovery"]
-    output_root = Path(discovery_cfg.get("output", {}).get("root_dir", "outputs/discovery"))
+
+    output_cfg = discovery_cfg.get("output", {})
+    output_root = Path(output_cfg.get("root_dir", "outputs/discovery"))
     result_dir = ensure_dir(output_root / experiment_name)
     ensure_dir(output_root / "logs")
 
+    min_free_gb = float(output_cfg.get("min_free_gb", 2.0))
+    _check_free_disk_space(output_root, min_free_gb=min_free_gb)
+
+    for vocab_name in discovery_cfg["vocab_paths"].keys():
+        ensure_dir(result_dir / vocab_name)
+
     model, tokenizer, dtype = _load_model_and_tokenizer(config["model"])
+    _warn_if_running_without_cuda(model)
+
     token_chunks = load_token_chunks(
         dataset_cfg=discovery_cfg["dataset"],
         tokenizer=tokenizer,
@@ -260,7 +310,11 @@ def run_discovery(config: dict[str, Any]) -> None:
     )
     sae_device = _get_module_device(extractor.target_module)
 
-    sae = _load_sae(discovery_cfg=discovery_cfg, device=sae_device, dtype=dtype)
+    sae = _load_sae(
+        discovery_cfg=discovery_cfg,
+        device=sae_device,
+        dtype=dtype,
+    )
 
     vocab_stats = _build_sparse_stats(
         config,
@@ -269,7 +323,6 @@ def run_discovery(config: dict[str, Any]) -> None:
         device=sae_device,
     )
     batch_size = int(discovery_cfg.get("batching", {}).get("token_batch_size", 8))
-
     model_input_device = _get_model_input_device(model)
 
     with extractor:
@@ -289,8 +342,10 @@ def run_discovery(config: dict[str, Any]) -> None:
                     raise ValueError(
                         f"Expected hidden states with shape [batch, seq, d_model], got {tuple(hidden.shape)}"
                     )
+
                 hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=sae_device, dtype=dtype)
                 sparse_latents = encode_sparse(sae, hidden_2d)
+
                 top_acts = sparse_latents.top_acts.reshape(hidden.shape[0], hidden.shape[1], -1)
                 top_indices = sparse_latents.top_indices.reshape(hidden.shape[0], hidden.shape[1], -1)
 
@@ -300,7 +355,7 @@ def run_discovery(config: dict[str, Any]) -> None:
 
     alpha = float(discovery_cfg.get("scoring", {}).get("alpha", 1.0))
     epsilon = float(discovery_cfg.get("scoring", {}).get("epsilon", 1e-12))
-    top_k = int(discovery_cfg.get("output", {}).get("top_k", 100))
+    top_k = int(output_cfg.get("top_k", 100))
 
     for vocab_name, stats in vocab_stats.items():
         result = stats.finalize(alpha=alpha, epsilon=epsilon)
