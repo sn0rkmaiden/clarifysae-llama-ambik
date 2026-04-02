@@ -17,6 +17,7 @@ from clarifysae_llama.discovery.sae_utils import (
     encode_sparse,
     get_decoder_matrix,
     get_num_latents,
+    sparse_to_dense,
 )
 from clarifysae_llama.utils.io import ensure_dir
 
@@ -31,6 +32,20 @@ class OutputScoreResult:
     output_score: float
     prompt: str
     steering_scale: float
+
+
+def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype) -> torch.Tensor:
+    try:
+        # sparsify-style
+        return sae.decode(sparse.top_acts, sparse.top_indices)
+    except TypeError:
+        # dictionary_learning-style
+        dense = sparse_to_dense(
+            sparse,
+            num_latents=get_num_latents(sae),
+            dtype=dtype,
+        )
+        return sae.decode(dense)
 
 
 class SingleFeatureIntervention:
@@ -63,6 +78,12 @@ class SingleFeatureIntervention:
     @torch.inference_mode()
     def _hook_fn(self, module, inputs, output):
         hidden = output[0] if isinstance(output, tuple) else output
+        if hidden is None:
+            return output
+        if hidden.ndim != 3:
+            raise ValueError(
+                f"Expected hidden states with shape [batch, seq, d_model], got {tuple(hidden.shape)}"
+            )
 
         original_device = hidden.device
         original_dtype = hidden.dtype
@@ -88,11 +109,23 @@ class SingleFeatureIntervention:
 
         missing_rows = ~hit_mask.any(dim=1)
         if missing_rows.any():
-            replacement_col = torch.argmin(top_acts[missing_rows], dim=1)
-            top_indices[missing_rows, replacement_col] = self.feature_idx
-            top_acts[missing_rows, replacement_col] = self.steering_delta
+            replacement_col = torch.argmin(top_acts[missing_rows].abs(), dim=1)
+            row_idx = torch.arange(replacement_col.shape[0], device=top_acts.device)
 
-        recon = self.sae.decode(top_acts, top_indices)
+            acts_missing = top_acts[missing_rows].clone()
+            idx_missing = top_indices[missing_rows].clone()
+
+            idx_missing[row_idx, replacement_col] = self.feature_idx
+            acts_missing[row_idx, replacement_col] = self.steering_delta
+
+            top_indices[missing_rows] = idx_missing
+            top_acts[missing_rows] = acts_missing
+
+        recon = _decode_from_sparse(
+            self.sae,
+            SparseLatents(top_acts=top_acts, top_indices=top_indices),
+            dtype=hidden_2d.dtype,
+        )
         recon = recon.reshape(original_shape).to(
             device=original_device,
             dtype=original_dtype,
