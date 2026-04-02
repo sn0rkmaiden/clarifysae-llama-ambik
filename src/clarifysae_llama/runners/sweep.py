@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +41,10 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
 ]
 
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True, help='Path to sweep YAML config')
     return parser.parse_args()
-
 
 
 def _sanitize_token(value: Any) -> str:
@@ -59,7 +58,6 @@ def _sanitize_token(value: Any) -> str:
     return token.strip('_') or 'value'
 
 
-
 def _short_hookpoint(hookpoint: str) -> str:
     match = re.fullmatch(r'layers\.(\d+)\.(.+)', hookpoint)
     if match:
@@ -68,11 +66,9 @@ def _short_hookpoint(hookpoint: str) -> str:
     return _sanitize_token(hookpoint)
 
 
-
 def _build_legacy_run_name(experiment_prefix: str, parameter: str, value: Any) -> str:
     suffix = _sanitize_token(value)
     return f"{experiment_prefix}__{parameter.replace('.', '_')}__{suffix}"
-
 
 
 def _build_single_feature_run_name(
@@ -93,15 +89,46 @@ def _build_single_feature_run_name(
     return '__'.join(parts)
 
 
+def _storage_defaults() -> dict[str, Any]:
+    return {
+        'layout': 'flat',                  # 'flat' or 'nested'
+        'keep_generated_configs': False,
+        'keep_predictions': False,
+        'keep_predictions_full': False,
+        'keep_results': True,
+        'keep_results_full': False,
+        'keep_example_metrics': False,
+        'keep_aggregate_metrics': False,
+        'keep_category_metrics': False,
+        'cleanup_tmp_run_dirs': True,
+    }
 
-def _prepare_sweep_dirs(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> tuple[str, Path, Path]:
+
+def _storage_cfg(sweep_cfg: dict[str, Any]) -> dict[str, Any]:
+    storage = copy.deepcopy(_storage_defaults())
+    storage.update(sweep_cfg.get('sweep', {}).get('storage', {}))
+    return storage
+
+
+def _prepare_sweep_dirs(
+    sweep_cfg: dict[str, Any],
+    base_cfg: dict[str, Any],
+) -> tuple[str, Path, Path | None, Path, dict[str, Any]]:
     sweep_name = str(sweep_cfg.get('experiment_name') or f"{base_cfg['experiment_name']}__sweep")
     root_dir = Path(base_cfg['output']['root_dir'])
     sweep_dir = ensure_dir(root_dir / 'sweeps' / sweep_name)
-    generated_cfg_dir = ensure_dir(sweep_dir / 'generated_configs')
-    dump_yaml(sweep_dir / 'source_sweep_config.yaml', sweep_cfg)
-    return sweep_name, sweep_dir, generated_cfg_dir
+    storage = _storage_cfg(sweep_cfg)
 
+    generated_cfg_dir: Path | None
+    if storage.get('keep_generated_configs', False):
+        generated_cfg_dir = ensure_dir(sweep_dir / 'generated_configs')
+    else:
+        generated_cfg_dir = None
+
+    tmp_root = ensure_dir(sweep_dir / '_tmp_run_eval')
+
+    dump_yaml(sweep_dir / 'source_sweep_config.yaml', sweep_cfg)
+    return sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage
 
 
 def _validate_legacy_sweep_config(sweep_cfg: dict[str, Any]) -> None:
@@ -110,7 +137,6 @@ def _validate_legacy_sweep_config(sweep_cfg: dict[str, Any]) -> None:
         raise ValueError('Legacy sweep configs must define sweep.parameter and sweep.values.')
     if not isinstance(sweep_section['values'], list) or not sweep_section['values']:
         raise ValueError('sweep.values must be a non-empty list.')
-
 
 
 def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
@@ -132,8 +158,17 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
             raise ValueError(f'sweep.groups[{group_idx}].features must be a non-empty list.')
 
 
-
-def _emit_run_start(run_idx: int, total_runs: int, *, run_name: str, vocab: str | None = None, hookpoint: str | None = None, feature_index: int | None = None, strength: Any | None = None, config_path: Path) -> None:
+def _emit_run_start(
+    run_idx: int,
+    total_runs: int,
+    *,
+    run_name: str,
+    vocab: str | None = None,
+    hookpoint: str | None = None,
+    feature_index: int | None = None,
+    strength: Any | None = None,
+    config_path: Path | None = None,
+) -> None:
     print(f"\n[{run_idx}/{total_runs}] Running {run_name}")
     details = []
     if vocab is not None:
@@ -146,57 +181,256 @@ def _emit_run_start(run_idx: int, total_runs: int, *, run_name: str, vocab: str 
         details.append(f'strength={strength}')
     if details:
         print('  ' + ' '.join(details))
-    print(f'  config: {config_path}')
+    if config_path is not None:
+        print(f'  config: {config_path}')
 
+
+def _replace_file(src: str | Path | None, dst: Path | None) -> str | None:
+    if src is None or dst is None:
+        return None
+    src = Path(src)
+    if not src.exists():
+        return None
+    ensure_dir(dst.parent)
+    if dst.exists():
+        dst.unlink()
+    shutil.move(str(src), str(dst))
+    return str(dst)
+
+
+def _safe_rmtree(path: str | Path | None) -> None:
+    if path is None:
+        return
+    path = Path(path)
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _safe_unlink(path: str | Path | None) -> None:
+    if path is None:
+        return
+    path = Path(path)
+    if path.exists():
+        path.unlink(missing_ok=True)
+
+
+def _load_single_row_csv(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    path = Path(path)
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    if df.empty:
+        return {}
+    return df.iloc[0].to_dict()
+
+
+def _load_multi_row_csv(path: str | Path | None) -> pd.DataFrame:
+    if path is None:
+        return pd.DataFrame()
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def _flatten_run_artifacts(
+    *,
+    sweep_dir: Path,
+    run_name: str,
+    result: dict[str, Any],
+    storage: dict[str, Any],
+) -> dict[str, Any]:
+    if storage.get('layout', 'flat') != 'flat':
+        return {
+            'predictions_path': result.get('predictions_path'),
+            'results_path': result.get('results_path'),
+            'example_metrics_path': result.get('example_metrics_path'),
+            'aggregate_metrics_path': result.get('aggregate_metrics_path'),
+            'category_metrics_path': result.get('category_metrics_path'),
+        }
+
+    predictions_dir = ensure_dir(sweep_dir / 'predictions')
+    results_dir = ensure_dir(sweep_dir / 'results')
+    metrics_dir = ensure_dir(sweep_dir / 'metrics')
+
+    kept_paths = {
+        'predictions_path': None,
+        'results_path': None,
+        'example_metrics_path': None,
+        'aggregate_metrics_path': None,
+        'category_metrics_path': None,
+    }
+
+    predictions_path = result.get('predictions_path')
+    results_path = result.get('results_path')
+    example_metrics_path = result.get('example_metrics_path')
+    aggregate_metrics_path = result.get('aggregate_metrics_path')
+    category_metrics_path = result.get('category_metrics_path')
+    results_full_path = result.get('results_full_path')
+
+    predictions_full_path = None
+    if predictions_path is not None:
+        pred_dir = Path(predictions_path).parent
+        candidate = pred_dir / 'predictions_full.jsonl'
+        if candidate.exists():
+            predictions_full_path = candidate
+
+    if storage.get('keep_predictions', False):
+        kept_paths['predictions_path'] = _replace_file(
+            predictions_path,
+            predictions_dir / f'{run_name}__predictions.jsonl',
+        )
+    else:
+        _safe_unlink(predictions_path)
+
+    if storage.get('keep_predictions_full', False):
+        _replace_file(
+            predictions_full_path,
+            predictions_dir / f'{run_name}__predictions_full.jsonl',
+        )
+    else:
+        _safe_unlink(predictions_full_path)
+
+    if storage.get('keep_results', True):
+        kept_paths['results_path'] = _replace_file(
+            results_path,
+            results_dir / f'{run_name}__results.json',
+        )
+    else:
+        _safe_unlink(results_path)
+
+    if storage.get('keep_results_full', False):
+        _replace_file(
+            results_full_path,
+            results_dir / f'{run_name}__results_full.json',
+        )
+    else:
+        _safe_unlink(results_full_path)
+
+    if storage.get('keep_example_metrics', False):
+        kept_paths['example_metrics_path'] = _replace_file(
+            example_metrics_path,
+            metrics_dir / f'{run_name}__example_metrics.csv',
+        )
+    else:
+        _safe_unlink(example_metrics_path)
+
+    if storage.get('keep_aggregate_metrics', False):
+        kept_paths['aggregate_metrics_path'] = _replace_file(
+            aggregate_metrics_path,
+            metrics_dir / f'{run_name}__aggregate_metrics.csv',
+        )
+    else:
+        _safe_unlink(aggregate_metrics_path)
+
+    if storage.get('keep_category_metrics', False):
+        kept_paths['category_metrics_path'] = _replace_file(
+            category_metrics_path,
+            metrics_dir / f'{run_name}__category_metrics.csv',
+        )
+    else:
+        _safe_unlink(category_metrics_path)
+
+    if storage.get('cleanup_tmp_run_dirs', True):
+        if predictions_path is not None:
+            _safe_rmtree(Path(predictions_path).parent)
+        if example_metrics_path is not None:
+            _safe_rmtree(Path(example_metrics_path).parents[1])
+
+    return kept_paths
+
+
+def _merge_metadata(row: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(row)
+    merged.update(metrics)
+    return merged
 
 
 def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
     _validate_legacy_sweep_config(sweep_cfg)
-    sweep_name, sweep_dir, generated_cfg_dir = _prepare_sweep_dirs(sweep_cfg, base_cfg)
+    sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage = _prepare_sweep_dirs(sweep_cfg, base_cfg)
     parameter = sweep_cfg['sweep']['parameter']
     values = sweep_cfg['sweep']['values']
 
     print(f"=== sweep :: {sweep_name} ===")
     print(f'legacy parameter sweep over {parameter}')
     print(f'total runs: {len(values)}')
+    print(f"storage layout: {storage.get('layout', 'flat')}")
 
     manifest_rows: list[dict[str, Any]] = []
+    aggregate_summary_rows: list[dict[str, Any]] = []
+    category_summary_rows: list[dict[str, Any]] = []
+
     for run_idx, value in enumerate(values, start=1):
         run_cfg = copy.deepcopy(base_cfg)
+        run_cfg['output']['root_dir'] = str(tmp_root)
         set_by_dotted_path(run_cfg, parameter, value)
         run_name = _build_legacy_run_name(sweep_name, parameter, value)
         run_cfg['experiment_name'] = run_name
-        cfg_path = generated_cfg_dir / f'{run_name}.yaml'
-        dump_yaml(cfg_path, run_cfg)
+
+        cfg_path = None
+        if generated_cfg_dir is not None:
+            cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+            dump_yaml(cfg_path, run_cfg)
 
         _emit_run_start(run_idx, len(values), run_name=run_name, config_path=cfg_path)
         result = run_eval(run_cfg)
         print(f"  finished: {run_name}")
 
-        manifest_rows.append({
+        aggregate_metrics = _load_single_row_csv(result.get('aggregate_metrics_path'))
+        category_metrics = _load_multi_row_csv(result.get('category_metrics_path'))
+
+        flattened_paths = _flatten_run_artifacts(
+            sweep_dir=sweep_dir,
+            run_name=run_name,
+            result=result,
+            storage=storage,
+        )
+
+        manifest_row = {
             'run_name': run_name,
             'parameter': parameter,
             'value': value,
-            'config_path': str(cfg_path),
-            'predictions_path': result['predictions_path'],
-            'results_path': result['results_path'],
-            'example_metrics_path': result['example_metrics_path'],
-            'aggregate_metrics_path': result['aggregate_metrics_path'],
-            'category_metrics_path': result['category_metrics_path'],
-        })
+            'config_path': str(cfg_path) if cfg_path is not None else None,
+            'predictions_path': flattened_paths['predictions_path'],
+            'results_path': flattened_paths['results_path'],
+            'example_metrics_path': flattened_paths['example_metrics_path'],
+            'aggregate_metrics_path': flattened_paths['aggregate_metrics_path'],
+            'category_metrics_path': flattened_paths['category_metrics_path'],
+        }
+        manifest_rows.append(manifest_row)
+
+        aggregate_summary_rows.append(_merge_metadata(manifest_row, aggregate_metrics))
+        if not category_metrics.empty:
+            for _, cat_row in category_metrics.iterrows():
+                category_summary_rows.append(_merge_metadata(manifest_row, cat_row.to_dict()))
 
     manifest_jsonl = sweep_dir / 'manifest.jsonl'
     manifest_csv = sweep_dir / 'manifest.csv'
     write_jsonl(manifest_jsonl, manifest_rows)
     write_csv(manifest_csv, pd.DataFrame(manifest_rows, columns=LEGACY_MANIFEST_COLUMNS))
+
+    if aggregate_summary_rows:
+        write_csv(sweep_dir / 'aggregate_summary.csv', pd.DataFrame(aggregate_summary_rows))
+    if category_summary_rows:
+        write_csv(sweep_dir / 'category_summary.csv', pd.DataFrame(category_summary_rows))
+
+    if storage.get('cleanup_tmp_run_dirs', True):
+        _safe_rmtree(tmp_root)
+
     print(f"\nSweep finished: {sweep_name}")
     print(f'  manifest: {manifest_csv}')
-
+    if aggregate_summary_rows:
+        print(f'  aggregate summary: {sweep_dir / "aggregate_summary.csv"}')
+    if category_summary_rows:
+        print(f'  category summary: {sweep_dir / "category_summary.csv"}')
 
 
 def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
     _validate_single_feature_sweep_config(sweep_cfg)
-    sweep_name, sweep_dir, generated_cfg_dir = _prepare_sweep_dirs(sweep_cfg, base_cfg)
+    sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage = _prepare_sweep_dirs(sweep_cfg, base_cfg)
     strengths = sweep_cfg['sweep']['strengths']
     groups = sweep_cfg['sweep']['groups']
 
@@ -204,8 +438,12 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
     print(f"=== sweep :: {sweep_name} ===")
     print('mode: single_feature_strength')
     print(f'total runs: {total_runs}')
+    print(f"storage layout: {storage.get('layout', 'flat')}")
 
     manifest_rows: list[dict[str, Any]] = []
+    aggregate_summary_rows: list[dict[str, Any]] = []
+    category_summary_rows: list[dict[str, Any]] = []
+
     seen_run_names: set[str] = set()
     run_counter = 0
 
@@ -219,6 +457,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
             for strength in strengths:
                 run_counter += 1
                 run_cfg = copy.deepcopy(base_cfg)
+                run_cfg['output']['root_dir'] = str(tmp_root)
                 set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
                 set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
                 set_by_dotted_path(run_cfg, 'steering.strength', strength)
@@ -248,8 +487,11 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'strength': strength,
                 }
 
-                cfg_path = generated_cfg_dir / f'{run_name}.yaml'
-                dump_yaml(cfg_path, run_cfg)
+                cfg_path = None
+                if generated_cfg_dir is not None:
+                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    dump_yaml(cfg_path, run_cfg)
+
                 _emit_run_start(
                     run_counter,
                     total_runs,
@@ -262,27 +504,57 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                 )
                 result = run_eval(run_cfg)
                 print(f"  finished: {run_name}")
-                manifest_rows.append({
+
+                aggregate_metrics = _load_single_row_csv(result.get('aggregate_metrics_path'))
+                category_metrics = _load_multi_row_csv(result.get('category_metrics_path'))
+
+                flattened_paths = _flatten_run_artifacts(
+                    sweep_dir=sweep_dir,
+                    run_name=run_name,
+                    result=result,
+                    storage=storage,
+                )
+
+                manifest_row = {
                     'run_name': run_name,
                     'vocab': vocab,
                     'hookpoint': hookpoint,
                     'feature_index': feature_index,
                     'strength': strength,
-                    'config_path': str(cfg_path),
-                    'predictions_path': result['predictions_path'],
-                    'results_path': result['results_path'],
-                    'example_metrics_path': result['example_metrics_path'],
-                    'aggregate_metrics_path': result['aggregate_metrics_path'],
-                    'category_metrics_path': result['category_metrics_path'],
-                })
+                    'config_path': str(cfg_path) if cfg_path is not None else None,
+                    'predictions_path': flattened_paths['predictions_path'],
+                    'results_path': flattened_paths['results_path'],
+                    'example_metrics_path': flattened_paths['example_metrics_path'],
+                    'aggregate_metrics_path': flattened_paths['aggregate_metrics_path'],
+                    'category_metrics_path': flattened_paths['category_metrics_path'],
+                }
+                manifest_rows.append(manifest_row)
+
+                aggregate_summary_rows.append(_merge_metadata(manifest_row, aggregate_metrics))
+                if not category_metrics.empty:
+                    for _, cat_row in category_metrics.iterrows():
+                        category_summary_rows.append(_merge_metadata(manifest_row, cat_row.to_dict()))
 
     manifest_df = pd.DataFrame(manifest_rows, columns=SINGLE_FEATURE_MANIFEST_COLUMNS)
     manifest_jsonl = sweep_dir / 'manifest.jsonl'
     manifest_csv = sweep_dir / 'manifest.csv'
     write_jsonl(manifest_jsonl, manifest_rows)
     write_csv(manifest_csv, manifest_df)
+
+    if aggregate_summary_rows:
+        write_csv(sweep_dir / 'aggregate_summary.csv', pd.DataFrame(aggregate_summary_rows))
+    if category_summary_rows:
+        write_csv(sweep_dir / 'category_summary.csv', pd.DataFrame(category_summary_rows))
+
+    if storage.get('cleanup_tmp_run_dirs', True):
+        _safe_rmtree(tmp_root)
+
     print(f"\nSweep finished: {sweep_name}")
     print(f'  manifest: {manifest_csv}')
+    if aggregate_summary_rows:
+        print(f'  aggregate summary: {sweep_dir / "aggregate_summary.csv"}')
+    if category_summary_rows:
+        print(f'  category summary: {sweep_dir / "category_summary.csv"}')
 
 
 if __name__ == '__main__':

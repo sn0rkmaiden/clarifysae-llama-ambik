@@ -1,10 +1,10 @@
-experiment_name: debug_steer_llama32_1b_feat11288_s0p05_20
+experiment_name: 1b_sweep_base
 seed: 42
 
 model:
   name: unsloth/Llama-3.2-1B-Instruct
   backend: hf
-  torch_dtype: float16
+  torch_dtype: bfloat16
   device_map: auto
   attn_implementation: null
 
@@ -20,26 +20,32 @@ prompting:
 
 steering:
   enabled: true
-  method: sparsify
-  sae_repo: EleutherAI/sae-Llama-3.2-1B-131k
-  hookpoint: layers.10.mlp
-  feature_indices: [11288]
-  strength: 0.05
+  method: custom
+  loader: sparsify
+  sae_repo: apart/llama3.2_1b_instruct_saes_vader
+
+  # placeholders; sweep.py will overwrite these
+  hookpoint: model.layers.10
+  module_path: model.layers.10
+  feature_indices: [0]
+  strength: 1.0
+
   mode: additive
   apply_to: all_positions
   steer_generated_tokens_only: true
+
   runtime:
     normalize_reconstruction: true
     preserve_unsteered_residual: true
-    clamp_latents: 5.0
-    log_feature_acts: true
+    clamp_latents: null
+    log_feature_acts: false
 
 batching:
   batch_size: 2
 
 dataset:
-  path: data/raw/ambik/ambik_calib_100.csv
-  limit: 20
+  path: data/raw/ambik/ambik_test_900.csv
+  limit: null
 
 output:
   root_dir: outputs

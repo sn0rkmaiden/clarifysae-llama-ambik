@@ -10,3 +10,15 @@ sweep:
     - vocab: Q
       hookpoint: layers.12.mlp
       features: [3557]
+
+  storage:
+    layout: flat
+    keep_generated_configs: false
+    keep_predictions: false
+    keep_predictions_full: false
+    keep_results: true
+    keep_results_full: false
+    keep_example_metrics: false
+    keep_aggregate_metrics: false
+    keep_category_metrics: false
+    cleanup_tmp_run_dirs: true

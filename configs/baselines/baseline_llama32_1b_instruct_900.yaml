@@ -1,4 +1,4 @@
-experiment_name: llama32_1b_instruct_baseline_900
+experiment_name: baseline_llama31_1b_instruct_900
 seed: 42
 
 model:
