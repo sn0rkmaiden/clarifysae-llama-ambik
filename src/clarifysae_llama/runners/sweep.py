@@ -30,6 +30,8 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'run_name',
     'vocab',
     'hookpoint',
+    'module_path',
+    'sae_file',
     'feature_index',
     'strength',
     'config_path',
@@ -156,6 +158,11 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
             raise ValueError(f'sweep.groups[{group_idx}] is missing features.')
         if not isinstance(group['features'], list) or not group['features']:
             raise ValueError(f'sweep.groups[{group_idx}].features must be a non-empty list.')
+
+        if 'module_path' in group and not isinstance(group['module_path'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
+        if 'sae_file' in group and not isinstance(group['sae_file'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
 
 
 def _emit_run_start(
@@ -450,6 +457,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
     for group_idx, group in enumerate(groups):
         vocab = group.get('vocab')
         hookpoint = str(group['hookpoint'])
+        module_path = group.get('module_path')
+        sae_file = group.get('sae_file')
         features = group['features']
 
         for feature_index in features:
@@ -458,9 +467,15 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                 run_counter += 1
                 run_cfg = copy.deepcopy(base_cfg)
                 run_cfg['output']['root_dir'] = str(tmp_root)
+
                 set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
                 set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
                 set_by_dotted_path(run_cfg, 'steering.strength', strength)
+
+                if module_path is not None:
+                    set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
+                if sae_file is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
 
                 run_name = _build_single_feature_run_name(
                     experiment_prefix=sweep_name,
@@ -483,6 +498,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'group_index': group_idx,
                     'vocab': vocab,
                     'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
                     'feature_index': feature_index,
                     'strength': strength,
                 }
@@ -519,6 +536,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'run_name': run_name,
                     'vocab': vocab,
                     'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
                     'feature_index': feature_index,
                     'strength': strength,
                     'config_path': str(cfg_path) if cfg_path is not None else None,
