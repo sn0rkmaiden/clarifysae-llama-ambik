@@ -19,9 +19,9 @@ output_scoring:
   hookpoint: model.layers.10
   module_path: model.layers.10
 
-  prompt: "In my experience,"
-  steering_strength: 6.0
-  top_k_tokens: 10
+  prompt: "From my experience,"
+  amp_factor: 10.0
+  top_k_tokens: 20
 
   tokenization:
     max_length: 256

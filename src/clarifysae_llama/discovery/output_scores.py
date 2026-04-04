@@ -7,13 +7,9 @@ from typing import Any
 
 import pandas as pd
 import torch
-from torch.nn.utils.rnn import pad_sequence
-from tqdm import tqdm
 
-from clarifysae_llama.discovery.dataset import load_token_chunks
 from clarifysae_llama.discovery.sae_utils import (
     SparseLatents,
-    compute_a_max_from_sparse,
     encode_sparse,
     get_decoder_matrix,
     get_num_latents,
@@ -27,11 +23,16 @@ class OutputScoreResult:
     feature_idx: int
     top_token_ids: list[int]
     top_tokens: list[str]
-    prob: float
-    rank: int
+    best_token_id: int
+    best_token: str
+    top_token_score: float
+    best_rank_zero_based: int
+    best_rank: int
     output_score: float
     prompt: str
-    steering_scale: float
+    amp_factor: float
+    local_max_act: float
+    steering_delta: float
 
 
 def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype) -> torch.Tensor:
@@ -49,22 +50,31 @@ def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype) -> to
 
 
 class SingleFeatureIntervention:
+    """
+    Paper-faithful OutputScore intervention:
+    - operate only on the final sequence position
+    - scale by max current activation on that prompt/token
+    - add back SAE reconstruction error
+    """
+
     def __init__(
         self,
         target_module,
         sae,
         feature_idx: int,
-        steering_delta: float,
+        amp_factor: float,
         dtype: torch.dtype,
         device: torch.device,
     ):
         self.target_module = target_module
         self.sae = sae
         self.feature_idx = int(feature_idx)
-        self.steering_delta = float(steering_delta)
+        self.amp_factor = float(amp_factor)
         self.dtype = dtype
         self.device = device
         self._handle = None
+        self.last_local_max_act: float | None = None
+        self.last_delta: float | None = None
 
     def __enter__(self):
         self._handle = self.target_module.register_forward_hook(self._hook_fn)
@@ -87,108 +97,72 @@ class SingleFeatureIntervention:
 
         original_device = hidden.device
         original_dtype = hidden.dtype
-        original_shape = hidden.shape
 
-        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(
-            device=self.device,
-            dtype=self.dtype,
-        )
+        updated_hidden = hidden.clone()
+        last_hidden = hidden[:, -1, :].to(device=self.device, dtype=self.dtype)
 
-        sparse_latents = encode_sparse(self.sae, hidden_2d)
+        sparse_latents = encode_sparse(self.sae, last_hidden)
         if not isinstance(sparse_latents, SparseLatents):
             raise TypeError(
                 f"encode_sparse(...) returned {type(sparse_latents)!r}, expected SparseLatents"
             )
 
-        top_acts = sparse_latents.top_acts.clone()
-        top_indices = sparse_latents.top_indices.clone()
+        base_top_acts = sparse_latents.top_acts.clone()
+        base_top_indices = sparse_latents.top_indices.clone()
 
-        hit_mask = top_indices == self.feature_idx
+        base_recon = _decode_from_sparse(
+            self.sae,
+            SparseLatents(top_acts=base_top_acts, top_indices=base_top_indices),
+            dtype=last_hidden.dtype,
+        )
+
+        # Paper code computes SAE error from clean reconstruction and adds it back.
+        sae_error = (
+            last_hidden.to(torch.float64) - base_recon.to(torch.float64)
+        ).to(last_hidden.dtype)
+
+        steered_top_acts = base_top_acts.clone()
+        steered_top_indices = base_top_indices.clone()
+
+        local_max_act = float(torch.max(base_top_acts).item()) if base_top_acts.numel() > 0 else 0.0
+        steering_delta = local_max_act * self.amp_factor
+
+        self.last_local_max_act = local_max_act
+        self.last_delta = float(steering_delta)
+
+        hit_mask = steered_top_indices == self.feature_idx
         if hit_mask.any():
-            top_acts[hit_mask] += self.steering_delta
+            steered_top_acts[hit_mask] += steering_delta
 
         missing_rows = ~hit_mask.any(dim=1)
         if missing_rows.any():
-            replacement_col = torch.argmin(top_acts[missing_rows].abs(), dim=1)
-            row_idx = torch.arange(replacement_col.shape[0], device=top_acts.device)
+            replacement_col = torch.argmin(steered_top_acts[missing_rows].abs(), dim=1)
+            row_idx = torch.arange(replacement_col.shape[0], device=steered_top_acts.device)
 
-            acts_missing = top_acts[missing_rows].clone()
-            idx_missing = top_indices[missing_rows].clone()
+            acts_missing = steered_top_acts[missing_rows].clone()
+            idx_missing = steered_top_indices[missing_rows].clone()
 
             idx_missing[row_idx, replacement_col] = self.feature_idx
-            acts_missing[row_idx, replacement_col] = self.steering_delta
+            acts_missing[row_idx, replacement_col] = steering_delta
 
-            top_indices[missing_rows] = idx_missing
-            top_acts[missing_rows] = acts_missing
+            steered_top_indices[missing_rows] = idx_missing
+            steered_top_acts[missing_rows] = acts_missing
 
-        recon = _decode_from_sparse(
+        steered_recon = _decode_from_sparse(
             self.sae,
-            SparseLatents(top_acts=top_acts, top_indices=top_indices),
-            dtype=hidden_2d.dtype,
+            SparseLatents(top_acts=steered_top_acts, top_indices=steered_top_indices),
+            dtype=last_hidden.dtype,
         )
-        recon = recon.reshape(original_shape).to(
+        steered_last_hidden = (steered_recon + sae_error).to(
             device=original_device,
             dtype=original_dtype,
         )
 
+        updated_hidden[:, -1, :] = steered_last_hidden
+
         if isinstance(output, tuple):
-            return (recon,) + output[1:]
-        return recon
-
-
-def compute_a_max(
-    model,
-    tokenizer,
-    sae,
-    target_module,
-    dataset_cfg: dict[str, Any],
-    tokenization_cfg: dict[str, Any],
-    batch_size: int,
-    dtype: torch.dtype,
-    sae_device: torch.device,
-    model_input_device: torch.device,
-) -> torch.Tensor:
-    from clarifysae_llama.runners.discover_features import HiddenActivationExtractor
-
-    token_chunks = load_token_chunks(
-        dataset_cfg=dataset_cfg,
-        tokenizer=tokenizer,
-        tokenization_cfg=tokenization_cfg,
-    )
-
-    a_max = torch.zeros(get_num_latents(sae), device=sae_device, dtype=torch.float32)
-    extractor = HiddenActivationExtractor(model, target_module=target_module)
-
-    with extractor:
-        for start in tqdm(range(0, len(token_chunks), batch_size), desc="Computing a_max"):
-            batch_tokens = token_chunks[start : start + batch_size]
-            padded = pad_sequence(
-                batch_tokens,
-                batch_first=True,
-                padding_value=tokenizer.pad_token_id,
-            )
-            attention_mask = (padded != tokenizer.pad_token_id).long()
-
-            model_inputs = {
-                "input_ids": padded.to(model_input_device),
-                "attention_mask": attention_mask.to(model_input_device),
-            }
-
-            with torch.inference_mode():
-                _ = model(**model_inputs, use_cache=False)
-                hidden = extractor.pop()
-                hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(
-                    device=sae_device,
-                    dtype=dtype,
-                )
-                sparse_latents = encode_sparse(sae, hidden_2d)
-                a_max = compute_a_max_from_sparse(
-                    sparse_latents,
-                    get_num_latents(sae),
-                    a_max,
-                )
-
-    return a_max.detach().cpu()
+            return (updated_hidden,) + output[1:]
+        return updated_hidden
 
 
 def compute_top_tokens_for_features(
@@ -198,6 +172,10 @@ def compute_top_tokens_for_features(
     feature_ids: list[int],
     top_k_tokens: int,
 ) -> dict[int, tuple[list[int], list[str]]]:
+    """
+    Paper-faithful logit-lens cache:
+    decoder -> final layer norm -> lm_head -> softmax -> top-k tokens
+    """
     decoder = get_decoder_matrix(sae)
     if decoder.ndim != 2:
         raise ValueError(
@@ -228,8 +206,9 @@ def compute_top_tokens_for_features(
                 except Exception:
                     vec = vec.to(device=lm_head_device, dtype=lm_head_dtype)
 
-            scores = lm_head @ vec
-            top_ids = torch.topk(scores, k=int(top_k_tokens)).indices.tolist()
+            logits = lm_head @ vec
+            confidence = torch.softmax(logits.float(), dim=0)
+            top_ids = torch.topk(confidence, k=int(top_k_tokens)).indices.tolist()
             top_tokens = [tokenizer.decode([token_id]) for token_id in top_ids]
             results[int(feature_idx)] = (top_ids, top_tokens)
 
@@ -242,9 +221,8 @@ def compute_output_scores(
     sae,
     target_module,
     feature_ids: list[int],
-    a_max: torch.Tensor,
     prompt: str,
-    steering_strength: float,
+    amp_factor: float,
     top_k_tokens: int,
     dtype: torch.dtype,
     sae_device: torch.device,
@@ -264,38 +242,52 @@ def compute_output_scores(
     results: list[OutputScoreResult] = []
     vocab_size = int(model.lm_head.weight.shape[0])
 
-    for feature_idx in tqdm(feature_ids, desc="Computing output scores"):
-        steering_delta = float(steering_strength) * float(a_max[int(feature_idx)].item())
+    for feature_idx in feature_ids:
+        top_ids, top_tokens = top_tokens_map[int(feature_idx)]
 
         with SingleFeatureIntervention(
             target_module=target_module,
             sae=sae,
             feature_idx=int(feature_idx),
-            steering_delta=steering_delta,
+            amp_factor=float(amp_factor),
             dtype=dtype,
             device=sae_device,
-        ):
+        ) as intervention:
             with torch.inference_mode():
                 logits = model(**prompt_inputs, use_cache=False).logits[0, -1]
-                probs = torch.softmax(logits.float(), dim=-1).detach().cpu()
+                probs = torch.softmax(logits.float(), dim=0).detach().cpu()
 
-        top_ids, top_tokens = top_tokens_map[int(feature_idx)]
-        target_token = int(top_ids[0])
+        logit_lens_probs = probs[top_ids]
+        best_prob_idx = int(torch.argmax(logit_lens_probs).item())
+        top_token_score = float(logit_lens_probs[best_prob_idx].item())
 
-        prob = float(probs[target_token].item())
-        rank = int((probs > prob).sum().item()) + 1
-        output_score = prob * (1.0 - (rank / vocab_size))
+        tokens_argsort = torch.argsort(probs, dim=0, descending=True)
+        ll_token_ranks_zero_based = [
+            int((tokens_argsort == token_id).nonzero(as_tuple=True)[0].item())
+            for token_id in top_ids
+        ]
+        best_rank_zero_based = int(min(ll_token_ranks_zero_based))
+        rank_output_score = 1.0 - (best_rank_zero_based / vocab_size)
+        output_score = float(rank_output_score * top_token_score)
+
+        best_token_id = int(top_ids[best_prob_idx])
+        best_token = str(top_tokens[best_prob_idx])
 
         results.append(
             OutputScoreResult(
                 feature_idx=int(feature_idx),
-                top_token_ids=top_ids,
-                top_tokens=top_tokens,
-                prob=prob,
-                rank=rank,
-                output_score=float(output_score),
+                top_token_ids=[int(x) for x in top_ids],
+                top_tokens=[str(x) for x in top_tokens],
+                best_token_id=best_token_id,
+                best_token=best_token,
+                top_token_score=top_token_score,
+                best_rank_zero_based=best_rank_zero_based,
+                best_rank=best_rank_zero_based + 1,
+                output_score=output_score,
                 prompt=prompt,
-                steering_scale=steering_delta,
+                amp_factor=float(amp_factor),
+                local_max_act=float(intervention.last_local_max_act or 0.0),
+                steering_delta=float(intervention.last_delta or 0.0),
             )
         )
 
@@ -305,21 +297,23 @@ def compute_output_scores(
 def save_output_score_results(
     output_dir: str | Path,
     feature_scores_path: str | Path,
-    a_max: torch.Tensor,
     results: list[OutputScoreResult],
     config: dict[str, Any],
 ) -> None:
     output_dir = ensure_dir(output_dir)
-    a_max_path = output_dir / "a_max.pt"
-    torch.save(a_max, a_max_path)
 
     rows = [
         {
             "feature_idx": result.feature_idx,
             "output_score": result.output_score,
-            "prob": result.prob,
-            "rank": result.rank,
-            "steering_scale": result.steering_scale,
+            "top_token_score": result.top_token_score,
+            "best_rank_zero_based": result.best_rank_zero_based,
+            "best_rank": result.best_rank,
+            "best_token_id": result.best_token_id,
+            "best_token": result.best_token,
+            "steering_delta": result.steering_delta,
+            "local_max_act": result.local_max_act,
+            "amp_factor": result.amp_factor,
             "top_token_ids": result.top_token_ids,
             "top_tokens": result.top_tokens,
             "prompt": result.prompt,
@@ -337,7 +331,6 @@ def save_output_score_results(
 
     config_payload = {
         "feature_scores_path": str(feature_scores_path),
-        "a_max_path": str(a_max_path),
         "n_features_used": len(results),
         "top_features": [int(r.feature_idx) for r in results],
         "config": config,
