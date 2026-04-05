@@ -35,7 +35,39 @@ class OutputScoreResult:
     steering_delta: float
 
 
-def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype) -> torch.Tensor:
+def _manual_decode_from_sparse(
+    sae,
+    sparse: SparseLatents,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    decoder = get_decoder_matrix(sae).to(device=device, dtype=dtype)
+    top_acts = sparse.top_acts.to(device=device, dtype=dtype)
+    top_indices = sparse.top_indices.to(device=device, dtype=torch.long)
+
+    if top_acts.shape != top_indices.shape:
+        raise ValueError(
+            "SparseLatents.top_acts and SparseLatents.top_indices must have matching shapes, "
+            f"got {tuple(top_acts.shape)} and {tuple(top_indices.shape)}."
+        )
+    if decoder.ndim != 2:
+        raise ValueError(f"Expected decoder matrix with shape [n_features, d_model], got {tuple(decoder.shape)}")
+
+    flat_acts = top_acts.reshape(-1, top_acts.shape[-1])
+    flat_indices = top_indices.reshape(-1, top_indices.shape[-1])
+
+    gathered = decoder.index_select(0, flat_indices.reshape(-1))
+    gathered = gathered.view(flat_indices.shape[0], flat_indices.shape[1], decoder.shape[1])
+    recon = (gathered * flat_acts.unsqueeze(-1)).sum(dim=-2)
+    return recon.view(*top_acts.shape[:-1], decoder.shape[1])
+
+
+def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    # CPU sparsify decode can still dispatch into Triton/xFormers and fail, so bypass it.
+    if sparse.top_acts.device.type != "cuda" or device.type != "cuda":
+        return _manual_decode_from_sparse(sae, sparse, device=device, dtype=dtype)
+
     try:
         # sparsify-style
         return sae.decode(sparse.top_acts, sparse.top_indices)
@@ -47,6 +79,11 @@ def _decode_from_sparse(sae, sparse: SparseLatents, *, dtype: torch.dtype) -> to
             dtype=dtype,
         )
         return sae.decode(dense)
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc).lower()
+        if "triton" in message or "cpu tensor" in message or "xformers" in message:
+            return _manual_decode_from_sparse(sae, sparse, device=device, dtype=dtype)
+        raise
 
 
 class SingleFeatureIntervention:
@@ -114,6 +151,7 @@ class SingleFeatureIntervention:
             self.sae,
             SparseLatents(top_acts=base_top_acts, top_indices=base_top_indices),
             dtype=last_hidden.dtype,
+            device=self.device,
         )
 
         # Paper code computes SAE error from clean reconstruction and adds it back.
@@ -152,6 +190,7 @@ class SingleFeatureIntervention:
             self.sae,
             SparseLatents(top_acts=steered_top_acts, top_indices=steered_top_indices),
             dtype=last_hidden.dtype,
+            device=self.device,
         )
         steered_last_hidden = (steered_recon + sae_error).to(
             device=original_device,
