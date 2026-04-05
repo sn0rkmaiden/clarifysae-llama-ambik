@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import torch
 
 from clarifysae_llama.config import dump_yaml, load_yaml, set_by_dotted_path
 from clarifysae_llama.runners.run_eval import run_eval
@@ -93,7 +95,7 @@ def _build_single_feature_run_name(
 
 def _storage_defaults() -> dict[str, Any]:
     return {
-        'layout': 'flat',                  # 'flat' or 'nested'
+        'layout': 'flat',
         'keep_generated_configs': False,
         'keep_predictions': False,
         'keep_predictions_full': False,
@@ -242,6 +244,13 @@ def _load_multi_row_csv(path: str | Path | None) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _release_cuda_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+
 def _flatten_run_artifacts(
     *,
     sweep_dir: Path,
@@ -383,8 +392,11 @@ def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> No
             dump_yaml(cfg_path, run_cfg)
 
         _emit_run_start(run_idx, len(values), run_name=run_name, config_path=cfg_path)
-        result = run_eval(run_cfg)
-        print(f"  finished: {run_name}")
+        try:
+            result = run_eval(run_cfg)
+            print(f"  finished: {run_name}")
+        finally:
+            _release_cuda_memory()
 
         aggregate_metrics = _load_single_row_csv(result.get('aggregate_metrics_path'))
         category_metrics = _load_multi_row_csv(result.get('category_metrics_path'))
@@ -467,7 +479,6 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                 run_counter += 1
                 run_cfg = copy.deepcopy(base_cfg)
                 run_cfg['output']['root_dir'] = str(tmp_root)
-
                 set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
                 set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
                 set_by_dotted_path(run_cfg, 'steering.strength', strength)
@@ -519,8 +530,11 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     strength=strength,
                     config_path=cfg_path,
                 )
-                result = run_eval(run_cfg)
-                print(f"  finished: {run_name}")
+                try:
+                    result = run_eval(run_cfg)
+                    print(f"  finished: {run_name}")
+                finally:
+                    _release_cuda_memory()
 
                 aggregate_metrics = _load_single_row_csv(result.get('aggregate_metrics_path'))
                 category_metrics = _load_multi_row_csv(result.get('category_metrics_path'))

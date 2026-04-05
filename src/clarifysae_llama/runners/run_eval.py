@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import os
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import torch
 from tqdm import tqdm
 from transformers.utils import logging as hf_logging
 
@@ -25,7 +27,6 @@ from clarifysae_llama.utils.io import ensure_dir, write_json, write_jsonl
 from clarifysae_llama.utils.logging import log_run
 from clarifysae_llama.utils.parsing import assess_json_output, parse_model_json
 from clarifysae_llama.utils.seed import set_seed
-
 
 
 def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +48,6 @@ def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-
 def _evaluation_settings(config: dict[str, Any]) -> dict[str, Any]:
     eval_cfg = config.get('evaluation', {})
     return {
@@ -60,7 +60,6 @@ def _evaluation_settings(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-
 def build_backend(config: dict):
     backend_name = config['model'].get('backend', 'hf')
     steering_enabled = config.get('steering', {}).get('enabled', False)
@@ -70,7 +69,6 @@ def build_backend(config: dict):
     if steering_enabled:
         return SteeredHFCausalBackend(config)
     return HFCausalBackend(config)
-
 
 
 def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -96,7 +94,6 @@ def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[
         }
         rows.append(prompt_row)
     return rows
-
 
 
 def _print_run_header(config: dict[str, Any], n_examples: int, batch_size: int, eval_settings: dict[str, Any]) -> None:
@@ -128,7 +125,6 @@ def _print_run_header(config: dict[str, Any], n_examples: int, batch_size: int, 
         print('steering: disabled')
 
 
-
 def _run_generation_stage(
     *,
     backend,
@@ -157,7 +153,6 @@ def _run_generation_stage(
             row[output_key] = raw_output
 
 
-
 def _coerce_predicted_ambiguous(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -166,7 +161,6 @@ def _coerce_predicted_ambiguous(value: Any) -> bool | None:
         if lowered in {'true', 'false'}:
             return lowered == 'true'
     return None
-
 
 
 def _compact_prediction_row(row: dict[str, Any], *, enable_nli: bool) -> dict[str, Any]:
@@ -258,6 +252,7 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: 
         raw_output = row.get('raw_model_output', '')
         parsed = parse_model_json(raw_output)
         parsed = parsed if isinstance(parsed, dict) else None
+
         predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
         model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
         json_metrics = assess_json_output(raw_output)
@@ -287,6 +282,58 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: 
     return prediction_rows
 
 
+def _cleanup_backend(backend) -> None:
+    if backend is None:
+        return
+
+    try:
+        if hasattr(backend, 'steering') and getattr(backend, 'steering', None) is not None:
+            try:
+                backend.steering.detach()
+            except Exception:
+                pass
+
+            try:
+                if hasattr(backend.steering, 'sae'):
+                    del backend.steering.sae
+            except Exception:
+                pass
+
+            try:
+                if hasattr(backend.steering, 'target_module'):
+                    del backend.steering.target_module
+            except Exception:
+                pass
+
+            try:
+                del backend.steering
+            except Exception:
+                pass
+
+        try:
+            if hasattr(backend, 'model'):
+                del backend.model
+        except Exception:
+            pass
+
+        try:
+            if hasattr(backend, 'tokenizer'):
+                del backend.tokenizer
+        except Exception:
+            pass
+
+        try:
+            if hasattr(backend, 'generation_kwargs'):
+                del backend.generation_kwargs
+        except Exception:
+            pass
+
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
 
 def run_eval(config: dict) -> dict[str, Any]:
     console_cfg = _configure_console(config)
@@ -305,115 +352,120 @@ def run_eval(config: dict) -> dict[str, Any]:
     )
     prompt_rows = build_prompts(dataset, eval_settings)
 
-    backend = build_backend(config)
     batch_size = int(config.get('batching', {}).get('batch_size', 1))
     _print_run_header(config, n_examples=len(prompt_rows), batch_size=batch_size, eval_settings=eval_settings)
 
+    backend = None
     started_at = time.perf_counter()
 
-    _run_generation_stage(
-        backend=backend,
-        prompt_rows=prompt_rows,
-        prompt_key='prompt',
-        output_key='raw_model_output',
-        batch_size=batch_size,
-        console_cfg=console_cfg,
-        experiment_name=experiment_name,
-        stage_label='generating',
-    )
+    try:
+        backend = build_backend(config)
 
-    prediction_rows = _finalize_prediction_rows(prompt_rows, eval_settings)
+        _run_generation_stage(
+            backend=backend,
+            prompt_rows=prompt_rows,
+            prompt_key='prompt',
+            output_key='raw_model_output',
+            batch_size=batch_size,
+            console_cfg=console_cfg,
+            experiment_name=experiment_name,
+            stage_label='generating',
+        )
 
-    compact_prediction_rows = _compact_prediction_rows(
-        prediction_rows,
-        enable_nli=eval_settings['enable_nli'],
-    )
+        prediction_rows = _finalize_prediction_rows(prompt_rows, eval_settings)
 
-    predictions_path = pred_dir / 'predictions.jsonl'
-    predictions_full_path = pred_dir / 'predictions_full.jsonl'
-    results_path = pred_dir / 'results.json'
-    results_full_path = pred_dir / 'results_full.json'
-    write_jsonl(predictions_path, compact_prediction_rows)
-    write_jsonl(predictions_full_path, prediction_rows)
+        compact_prediction_rows = _compact_prediction_rows(
+            prediction_rows,
+            enable_nli=eval_settings['enable_nli'],
+        )
 
-    run_info = {
-        'dataset_csv': config['dataset']['path'],
-        'output_json': str(results_path),
-        'output_full_json': str(results_full_path),
-        'seed': int(config.get('seed', 42)),
-        'num_examples': len(prompt_rows),
-        'model_name': config['model']['name'],
-        'steering_enabled': config.get('steering', {}).get('enabled', False),
-        'steering_cfg': config.get('steering') if config.get('steering', {}).get('enabled', False) else None,
-        'evaluation': eval_settings,
-    }
-    if 'run_metadata' in config:
-        run_info['run_metadata'] = config['run_metadata']
+        predictions_path = pred_dir / 'predictions.jsonl'
+        predictions_full_path = pred_dir / 'predictions_full.jsonl'
+        results_path = pred_dir / 'results.json'
+        results_full_path = pred_dir / 'results_full.json'
+        write_jsonl(predictions_path, compact_prediction_rows)
+        write_jsonl(predictions_full_path, prediction_rows)
 
-    write_json(results_path, {'run_info': run_info, 'examples': compact_prediction_rows})
-    write_json(results_full_path, {'run_info': run_info, 'examples': prediction_rows})
+        run_info = {
+            'dataset_csv': config['dataset']['path'],
+            'output_json': str(results_path),
+            'output_full_json': str(results_full_path),
+            'seed': int(config.get('seed', 42)),
+            'num_examples': len(prompt_rows),
+            'model_name': config['model']['name'],
+            'steering_enabled': config.get('steering', {}).get('enabled', False),
+            'steering_cfg': config.get('steering') if config.get('steering', {}).get('enabled', False) else None,
+            'evaluation': eval_settings,
+        }
+        if 'run_metadata' in config:
+            run_info['run_metadata'] = config['run_metadata']
 
-    raw_df = pd.DataFrame(prediction_rows)
-    example_metrics = raw_df[_select_example_metric_columns(raw_df, enable_nli=eval_settings['enable_nli'])].copy()
+        write_json(results_path, {'run_info': run_info, 'examples': compact_prediction_rows})
+        write_json(results_full_path, {'run_info': run_info, 'examples': prediction_rows})
 
-    aggregate_df, category_df = aggregate_metrics(
-        example_metrics,
-        embed_threshold=eval_settings['embed_threshold'],
-        brevity_max=eval_settings['brevity_max'],
-        nli_threshold=eval_settings['nli_threshold'],
-        enable_nli=eval_settings['enable_nli'],
-    )
-    save_metric_tables(example_metrics, aggregate_df, category_df, run_dir)
+        raw_df = pd.DataFrame(prediction_rows)
+        example_metrics = raw_df[_select_example_metric_columns(raw_df, enable_nli=eval_settings['enable_nli'])].copy()
 
-    example_metrics_path = run_dir / 'metrics' / 'example_metrics.csv'
-    aggregate_metrics_path = run_dir / 'tables' / 'aggregate_metrics.csv'
-    category_metrics_path = run_dir / 'tables' / 'category_metrics.csv'
+        aggregate_df, category_df = aggregate_metrics(
+            example_metrics,
+            embed_threshold=eval_settings['embed_threshold'],
+            brevity_max=eval_settings['brevity_max'],
+            nli_threshold=eval_settings['nli_threshold'],
+            enable_nli=eval_settings['enable_nli'],
+        )
+        save_metric_tables(example_metrics, aggregate_df, category_df, run_dir)
 
-    elapsed_sec = time.perf_counter() - started_at
-    print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
-    print(f"  predictions: {predictions_path}")
-    print(f"  results json: {results_path}")
-    print(f"  full results json: {results_full_path}")
-    print(f"  example metrics: {example_metrics_path}")
-    print(f"  aggregate metrics: {aggregate_metrics_path}")
-    print(f"  category metrics: {category_metrics_path}")
+        example_metrics_path = run_dir / 'metrics' / 'example_metrics.csv'
+        aggregate_metrics_path = run_dir / 'tables' / 'aggregate_metrics.csv'
+        category_metrics_path = run_dir / 'tables' / 'category_metrics.csv'
 
-    log_payload = {
-        'experiment_name': experiment_name,
-        'dataset_path': config['dataset']['path'],
-        'n_examples': len(prompt_rows),
-        'model_name': config['model']['name'],
-        'steering_enabled': config.get('steering', {}).get('enabled', False),
-        'sae_repo': config.get('steering', {}).get('sae_repo'),
-        'hookpoint': config.get('steering', {}).get('hookpoint'),
-        'feature_indices': config.get('steering', {}).get('feature_indices'),
-        'strength': config.get('steering', {}).get('strength'),
-        'predictions_path': str(predictions_path),
-        'results_path': str(results_path),
-        'results_full_path': str(results_full_path),
-        'example_metrics_path': str(example_metrics_path),
-        'aggregate_metrics_path': str(aggregate_metrics_path),
-        'category_metrics_path': str(category_metrics_path),
-        'evaluation': eval_settings,
-        'elapsed_sec': elapsed_sec,
-    }
-    if 'run_metadata' in config:
-        log_payload['run_metadata'] = config['run_metadata']
+        elapsed_sec = time.perf_counter() - started_at
+        print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
+        print(f"  predictions: {predictions_path}")
+        print(f"  results json: {results_path}")
+        print(f"  full results json: {results_full_path}")
+        print(f"  example metrics: {example_metrics_path}")
+        print(f"  aggregate metrics: {aggregate_metrics_path}")
+        print(f"  category metrics: {category_metrics_path}")
 
-    log_run(root_dir / 'logs' / 'runs.jsonl', log_payload)
+        log_payload = {
+            'experiment_name': experiment_name,
+            'dataset_path': config['dataset']['path'],
+            'n_examples': len(prompt_rows),
+            'model_name': config['model']['name'],
+            'steering_enabled': config.get('steering', {}).get('enabled', False),
+            'sae_repo': config.get('steering', {}).get('sae_repo'),
+            'hookpoint': config.get('steering', {}).get('hookpoint'),
+            'feature_indices': config.get('steering', {}).get('feature_indices'),
+            'strength': config.get('steering', {}).get('strength'),
+            'predictions_path': str(predictions_path),
+            'results_path': str(results_path),
+            'results_full_path': str(results_full_path),
+            'example_metrics_path': str(example_metrics_path),
+            'aggregate_metrics_path': str(aggregate_metrics_path),
+            'category_metrics_path': str(category_metrics_path),
+            'evaluation': eval_settings,
+            'elapsed_sec': elapsed_sec,
+        }
+        if 'run_metadata' in config:
+            log_payload['run_metadata'] = config['run_metadata']
 
-    return {
-        'experiment_name': experiment_name,
-        'predictions_path': str(predictions_path),
-        'results_path': str(results_path),
-        'results_full_path': str(results_full_path),
-        'example_metrics_path': str(example_metrics_path),
-        'aggregate_metrics_path': str(aggregate_metrics_path),
-        'category_metrics_path': str(category_metrics_path),
-        'run_metadata': config.get('run_metadata'),
-        'elapsed_sec': elapsed_sec,
-    }
+        log_run(root_dir / 'logs' / 'runs.jsonl', log_payload)
 
+        return {
+            'experiment_name': experiment_name,
+            'predictions_path': str(predictions_path),
+            'results_path': str(results_path),
+            'results_full_path': str(results_full_path),
+            'example_metrics_path': str(example_metrics_path),
+            'aggregate_metrics_path': str(aggregate_metrics_path),
+            'category_metrics_path': str(category_metrics_path),
+            'run_metadata': config.get('run_metadata'),
+            'elapsed_sec': elapsed_sec,
+        }
+
+    finally:
+        _cleanup_backend(backend)
 
 
 def parse_args() -> argparse.Namespace:
