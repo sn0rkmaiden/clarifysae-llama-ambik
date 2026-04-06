@@ -1,5 +1,5 @@
 experiment_name: llama32_1b_instruct_chosen_single_feature_strength_sweep_layers10_13
-base_config: configs/1b_instruct_sweep_base_float16.yaml
+base_config: configs/1b_instruct_sweep_base.yaml
 
 sweep:
   mode: single_feature_strength
