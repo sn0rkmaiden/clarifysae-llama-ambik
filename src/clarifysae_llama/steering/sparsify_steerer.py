@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import torch
-from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 from sparsify import Sae
 
 from clarifysae_llama.discovery.sae_utils import (
     SparseLatents,
     encode_sparse,
+    get_decoder_matrix,
     get_num_latents,
     sparse_to_dense,
 )
@@ -34,11 +36,9 @@ def normalize_hookpoint_to_module_path(hookpoint: str) -> str:
     if hp == "model.embed_tokens":
         return hp
 
-    # Apart-style / already fully qualified.
     if hp.startswith("model."):
         return hp
 
-    # EleutherAI sparsify-style, e.g. "layers.23.mlp"
     if hp.startswith("layers."):
         return f"model.{hp}"
 
@@ -70,8 +70,36 @@ def move_sae_to_device_dtype(sae: Any, device: torch.device, dtype: torch.dtype)
     return sae
 
 
-from pathlib import Path
-from huggingface_hub import hf_hub_download, snapshot_download
+def _cuda_device_index(device: torch.device) -> int:
+    if device.index is not None:
+        return int(device.index)
+    return torch.cuda.current_device()
+
+
+def _device_supports_sparsify_cuda(device: torch.device) -> bool:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return False
+    major, _minor = torch.cuda.get_device_capability(_cuda_device_index(device))
+    return major >= 8
+
+
+def _resolve_sae_runtime(loader: str, target_device: torch.device, model_dtype: torch.dtype) -> tuple[torch.device, torch.dtype]:
+    loader_name = str(loader).strip().lower().replace("-", "_")
+    sae_device = target_device
+    sae_dtype = model_dtype
+
+    if loader_name == "sparsify" and target_device.type == "cuda" and not _device_supports_sparsify_cuda(target_device):
+        major, minor = torch.cuda.get_device_capability(_cuda_device_index(target_device))
+        print(
+            "[WARN] Using a 'sparsify' SAE on CUDA sm_"
+            f"{major}{minor} during steering can trigger Triton/xFormers CUDA failures. "
+            "Running the SAE on CPU in float32 for this run."
+        )
+        sae_device = torch.device("cpu")
+        sae_dtype = torch.float32
+
+    return sae_device, sae_dtype
+
 
 def load_sae(
     *,
@@ -131,7 +159,12 @@ class SparsifySteerer:
 
         module_path = resolve_module_path(config.hookpoint, config.module_path)
         self.target_module = get_submodule_by_path(self.model, module_path)
-        self.sae_device = infer_module_device(self.target_module, fallback=self.model_device)
+        target_module_device = infer_module_device(self.target_module, fallback=self.model_device)
+        self.sae_device, self.sae_dtype = _resolve_sae_runtime(
+            loader=config.loader,
+            target_device=target_module_device,
+            model_dtype=self.dtype,
+        )
 
         self.sae = load_sae(
             loader=config.loader,
@@ -139,8 +172,17 @@ class SparsifySteerer:
             hookpoint=config.hookpoint,
             sae_file=config.sae_file,
             device=self.sae_device,
-            dtype=self.dtype,
+            dtype=self.sae_dtype,
         )
+        self._validate_feature_indices()
+
+    def _validate_feature_indices(self) -> None:
+        num_latents = int(get_num_latents(self.sae))
+        invalid = [int(idx) for idx in self.config.feature_indices if int(idx) < 0 or int(idx) >= num_latents]
+        if invalid:
+            raise ValueError(
+                f"Feature indices out of bounds for SAE with {num_latents} latents: {invalid[:10]}"
+            )
 
     def attach(self) -> None:
         if self.handle is None:
@@ -178,18 +220,39 @@ class SparsifySteerer:
         recon_norm = reconstruction.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         return reconstruction * (target_norm / recon_norm)
 
+    def _manual_decode_from_sparse(self, sparse: SparseLatents, *, dtype: torch.dtype) -> torch.Tensor:
+        decoder = get_decoder_matrix(self.sae)
+        if decoder.ndim != 2:
+            raise ValueError(f"Expected decoder matrix with 2 dims, got shape {tuple(decoder.shape)}")
+
+        acts = sparse.top_acts.to(device=decoder.device, dtype=decoder.dtype)
+        indices = sparse.top_indices.to(device=decoder.device, dtype=torch.long)
+
+        flat_indices = indices.reshape(-1)
+        selected_rows = decoder.index_select(0, flat_indices)
+        selected_rows = selected_rows.reshape(*indices.shape, decoder.shape[-1])
+        recon = (selected_rows * acts.unsqueeze(-1)).sum(dim=-2)
+        return recon.to(device=acts.device, dtype=dtype)
+
     def _decode_from_sparse(self, sparse: SparseLatents, *, dtype: torch.dtype) -> torch.Tensor:
+        use_manual = self.sae_device.type != "cuda" or sparse.top_acts.device.type != "cuda"
+        if use_manual:
+            return self._manual_decode_from_sparse(sparse, dtype=dtype)
+
         try:
-            # sparsify-style SAEs
             return self.sae.decode(sparse.top_acts, sparse.top_indices)
         except TypeError:
-            # dictionary_learning-style SAEs
             dense = sparse_to_dense(
                 sparse,
                 num_latents=get_num_latents(self.sae),
                 dtype=dtype,
             )
             return self.sae.decode(dense)
+        except (RuntimeError, ValueError) as exc:
+            message = str(exc).lower()
+            if "triton" in message or "cpu tensor" in message or "illegal memory access" in message:
+                return self._manual_decode_from_sparse(sparse, dtype=dtype)
+            raise
 
     @torch.inference_mode()
     def _hook_fn(self, module, inputs, output):
@@ -211,7 +274,7 @@ class SparsifySteerer:
             return output
 
         selected_mask_device = selected_mask.to(device=self.sae_device)
-        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.sae_device, dtype=self.dtype)
+        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.sae_device, dtype=self.sae_dtype)
         selected_hidden = hidden_2d[selected_mask_device]
 
         sparse_latents = encode_sparse(self.sae, selected_hidden)
@@ -251,7 +314,6 @@ class SparsifySteerer:
 
             missing_rows = ~hit_mask.any(dim=1)
             if missing_rows.any():
-                # Replace the weakest currently-active feature, not the most negative one.
                 replacement_col = torch.argmin(steered_top_acts[missing_rows].abs(), dim=1)
                 row_idx = torch.arange(replacement_col.shape[0], device=steered_top_acts.device)
 
