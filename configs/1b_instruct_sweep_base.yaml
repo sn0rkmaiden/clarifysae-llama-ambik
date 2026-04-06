@@ -25,7 +25,8 @@ steering:
   sae_repo: apart/llama3.2_1b_instruct_saes_vader
 
   # placeholders; sweep.py will overwrite these
-  hookpoint: layers.10.mlp
+  hookpoint: model.layers.10
+  module_path: model.layers.10
   feature_indices: [0]
   strength: 1.0
 
