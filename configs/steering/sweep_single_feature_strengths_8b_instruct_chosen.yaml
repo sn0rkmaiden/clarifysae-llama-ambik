@@ -1,4 +1,4 @@
-experiment_name: llama31_8b_instruct_chosen_single_feature_strength_sweep
+experiment_name: llama31_8b_instruct_extra
 base_config: configs/8b_instruct_sweep_base.yaml
 
 sweep:
