@@ -3,7 +3,7 @@ base_config: configs/8b_instruct_sweep_base.yaml
 
 sweep:
   mode: single_feature_strength
-  strengths: [-1.0, -3.0, -5.0, -10.0, 1.0, 3.0, 5.0, 10.0]
+  strengths: [-5.0, -10.0, 15.0, 20.0]
 
   groups:
     - vocab: C
