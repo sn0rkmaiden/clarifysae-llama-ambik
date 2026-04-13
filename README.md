@@ -134,6 +134,50 @@ llama32_1b_chosen_single_feature_strength_sweep__C__l10_mlp__feat11288__str5p0
 
 This removes the need to manage one config per feature by hand.
 
+
+## ClarQ-LLM support
+
+The repo now also includes a **legacy-compatible ClarQ-LLM runner** that reuses the
+old interaction logic (seeker + provider turns) but swaps the old Gemma / sae_lens
+stack for the current Hugging Face + `sparsify` / dictionary-learning steering backend.
+
+What is included for ClarQ:
+- local copy of the old seeker / provider prompting logic
+- a backend adapter that lets the old interaction code call the current HF backend
+- a new runner: `python -m clarifysae_llama.runners.run_clarq_eval --config ...`
+- a local reimplementation of the old ClarQ metrics, including strict success rate,
+  AQD, ARL, step recall, clarification count / rate / depth, goodbye rate, and
+  average question length
+
+Expected dataset path example:
+
+```text
+data/raw/clarq/English/
+data/raw/clarq/Chinese/
+```
+
+You can copy these directly from the old `ClarQ-LLM-main/data/` tree.
+
+Example baseline run:
+
+```bash
+python -m clarifysae_llama.runners.run_clarq_eval --config configs/clarq/baseline_clarq_llama31_8b.yaml
+```
+
+Example steered run:
+
+```bash
+python -m clarifysae_llama.runners.run_clarq_eval --config configs/clarq/steer_clarq_llama31_8b.yaml
+```
+
+Notes:
+- the ClarQ runner currently assumes the old **Comp / pure prompt** setup, which is
+  the closest match to your previous Gemma runs
+- provider and judge are separate model configs, so you can keep the seeker as Llama
+  while using another local HF model for provider / judge
+- if you want the closest historical setup, swap `provider_model` and `judge_model`
+  to the models you used before
+
 ## Outputs
 
 Each run writes into `outputs/`:
