@@ -20,11 +20,11 @@ prompting:
 
 steering:
   enabled: true
-  sae_repo: EleutherAI/sae-llama-3.1-8b-32x
+  sae_repo: andyrdt/saes-llama-3.1-8b-instruct
   loader: dictionary_learning
-  hookpoint: model.layers.23
-  module_path: model.layers.23
-  sae_file: resid_post_layer_23/trainer_1
+  hookpoint: model.layers.27
+  module_path: model.layers.27
+  sae_file: resid_post_layer_27/trainer_1
   feature_indices: [114768]
   strength: 5.0
   mode: additive
