@@ -137,7 +137,7 @@ This removes the need to manage one config per feature by hand.
 
 ## ClarQ-LLM support
 
-The repo now also includes a **legacy-compatible ClarQ-LLM runner** that reuses the
+The repo also includes a **ClarQ-LLM runner** that reuses the
 old interaction logic (seeker + provider turns) but swaps the old Gemma / sae_lens
 stack for the current Hugging Face + `sparsify` / dictionary-learning steering backend.
 
