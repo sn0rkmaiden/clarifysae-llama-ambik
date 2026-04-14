@@ -1,4 +1,5 @@
 import json
+from .json_parsing import parse_jsonish_response
 from clarifysae_llama.clarq_legacy.utils import detect_language
 
 class gold_responses:
@@ -113,8 +114,13 @@ class helper:
 
 
     def prompt_pure(self, prompt):
-        resonse,_ =  self.llm.request(prompt, None, json_format=True)
-        return json.loads(resonse)
+        prompt += (
+            "\nReturn only one valid JSON object. "
+            "Use double quotes for all keys and string values. "
+            "Do not return Python code, variable assignments, markdown, or explanations."
+        )
+        response, _ = self.llm.request(prompt, None, json_format=True)
+        return parse_jsonish_response(response, prompt)
 
 
     def data2prompt(self, previous_content):

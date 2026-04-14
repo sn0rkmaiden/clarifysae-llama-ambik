@@ -2,6 +2,7 @@ import ast
 import copy
 import json
 
+from .json_parsing import parse_jsonish_response
 from clarifysae_llama.clarq_legacy.simple_provider_agent import helper
 
 
@@ -114,22 +115,13 @@ class helpers(helper):
         return final_response
 
     def prompt_pure(self, prompt):
-        prompt += "\nReturn **only** a valid JSON object without any extra text."
-        # print(f"----- [PROMPT] is \n{prompt}")
-        response,_ =  self.llm.request(prompt, None, json_format=True)
-        # print(f"----- [MODEL RESPONSE] is \n{response}")
-        # return json.loads(response)
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            try:
-                obj = ast.literal_eval(response)
-                return obj
-            except Exception as e:
-                print("JSON decode error:", e)
-                print("Prompt was:\n", prompt)
-                print("Raw response (repr):\n", repr(response))
-                raise
+        prompt += (
+            "\nReturn only one valid JSON object. "
+            "Use double quotes for all keys and string values. "
+            "Do not return Python code, variable assignments, markdown, or explanations."
+        )
+        response, _ = self.llm.request(prompt, None, json_format=True)
+        return parse_jsonish_response(response, prompt)
 
 
     def data2prompt_0(self, previous_content):
