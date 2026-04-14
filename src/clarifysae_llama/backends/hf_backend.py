@@ -23,6 +23,11 @@ def normalize_generation_kwargs(generation_kwargs: dict[str, Any], tokenizer) ->
     if 'max_tokens' in kwargs and 'max_new_tokens' not in kwargs:
         kwargs['max_new_tokens'] = kwargs.pop('max_tokens')
 
+    # Avoid repeated HF warning:
+    # "Both `max_new_tokens` and `max_length` seem to have been set"
+    if 'max_new_tokens' in kwargs and 'max_length' in kwargs:
+        kwargs.pop('max_length', None)
+
     kwargs.pop('logprobs', None)
     kwargs.pop('logit_bias', None)
 

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import gc
+import os
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import torch
 from tqdm import tqdm
+from transformers.utils import logging as hf_logging
 
 from clarifysae_llama.backends.hf_backend import HFCausalBackend
 from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
@@ -19,10 +20,33 @@ from clarifysae_llama.clarq_legacy.provider_agent import helpers as GeneralProvi
 from clarifysae_llama.clarq_legacy.seeker_agent import player as SeekerPlayer
 from clarifysae_llama.clarq_legacy.utils import data_combination, read_path
 from clarifysae_llama.config import load_yaml
-from clarifysae_llama.eval.clarq_metrics import compute_metrics_for_payload, metrics_to_dataframes, parse_evaluation_set
+from clarifysae_llama.eval.clarq_metrics import (
+    compute_metrics_for_payload,
+    metrics_to_dataframes,
+    parse_evaluation_set,
+)
 from clarifysae_llama.utils.io import ensure_dir, write_csv, write_json
 from clarifysae_llama.utils.logging import log_run
 from clarifysae_llama.utils.seed import set_seed
+
+
+def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
+    console_cfg = config.get('console', {})
+    suppress_tf_warnings = bool(console_cfg.get('suppress_transformers_warnings', True))
+    show_progress = bool(console_cfg.get('show_progress', True))
+
+    if suppress_tf_warnings:
+        os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
+        hf_logging.set_verbosity_error()
+        warnings.filterwarnings('ignore', message=r'.*Both `max_new_tokens` .* and `max_length`.*')
+        warnings.filterwarnings('ignore', message=r'.*The following generation flags are not valid and may be ignored:.*')
+    else:
+        hf_logging.set_verbosity_warning()
+
+    return {
+        'show_progress': show_progress,
+        'suppress_transformers_warnings': suppress_tf_warnings,
+    }
 
 
 def _cleanup_backend(backend) -> None:
@@ -53,12 +77,18 @@ def _cleanup_backend(backend) -> None:
             torch.cuda.ipc_collect()
 
 
-def _build_unsteered_backend(model_cfg: dict[str, Any], generation_cfg: dict[str, Any], prompting_cfg: dict[str, Any]) -> HFCausalBackend:
-    return HFCausalBackend({
-        'model': model_cfg,
-        'generation': generation_cfg,
-        'prompting': prompting_cfg,
-    })
+def _build_unsteered_backend(
+    model_cfg: dict[str, Any],
+    generation_cfg: dict[str, Any],
+    prompting_cfg: dict[str, Any],
+) -> HFCausalBackend:
+    return HFCausalBackend(
+        {
+            'model': model_cfg,
+            'generation': generation_cfg,
+            'prompting': prompting_cfg,
+        }
+    )
 
 
 def _build_seeker_backend(config: dict[str, Any]):
@@ -83,26 +113,53 @@ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dic
             'strength': (config.get('steering') or {}).get('strength'),
             'hookpoint': (config.get('steering') or {}).get('hookpoint'),
             'sae_repo': (config.get('steering') or {}).get('sae_repo'),
-        } if config.get('steering', {}).get('enabled', False) else None,
+        }
+        if config.get('steering', {}).get('enabled', False)
+        else None,
         'judge_model': (config.get('judge_model') or {}).get('name'),
     }
 
 
 def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
+    console_cfg = _configure_console(config)
     set_seed(int(config.get('seed', 42)))
 
     clarq_cfg = config['clarq']
     eval_indices = parse_evaluation_set(str(clarq_cfg.get('evaluation_set', '0-25')))
     max_turns_cap = int(clarq_cfg.get('max_turns_cap', 22))
-    show_progress = bool(config.get('console', {}).get('show_progress', True))
+    show_progress = bool(console_cfg.get('show_progress', True))
 
     experiment_name = config['experiment_name']
     root_dir = Path(config['output']['root_dir'])
     run_dir = ensure_dir(root_dir / experiment_name)
     ensure_dir(root_dir / 'logs')
 
-    all_conv = data_combination(read_path(clarq_cfg['dataset_path']))
-    provider_cls = MultiInfoProvider if clarq_cfg.get('multi_info_provider_agent', False) else GeneralProvider
+    raw_data = read_path(clarq_cfg['dataset_path'])
+    if not raw_data:
+        raise ValueError(
+            f"No ClarQ files were loaded from {clarq_cfg['dataset_path']!r}. "
+            "Check that the directory exists and contains the ClarQ JSON files."
+        )
+
+    all_conv = data_combination(raw_data)
+    if not all_conv:
+        raise ValueError(
+            f"ClarQ data combination produced no conversations from {clarq_cfg['dataset_path']!r}."
+        )
+
+    provider_cls = (
+        MultiInfoProvider
+        if clarq_cfg.get('multi_info_provider_agent', False)
+        else GeneralProvider
+    )
+
+    total_dialogues = sum(len(one_type) for i, one_type in enumerate(all_conv) if i in eval_indices)
+
+    print(f"\n=== run_clarq_eval :: {experiment_name} ===")
+    print(f"dataset: {clarq_cfg['dataset_path']}")
+    print(f"eval task types: {len(eval_indices)} / {len(all_conv)}")
+    print(f"eval dialogues: {total_dialogues}")
+    print(f"max_turns_cap: {max_turns_cap}")
 
     seeker_backend = provider_backend = judge_backend = None
     started_at = time.perf_counter()
@@ -117,17 +174,32 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
         seeker_llm = BackendLLMAdapter(seeker_backend)
         provider_llm = BackendLLMAdapter(provider_backend)
 
-        outer_iter = enumerate(all_conv)
+        dialog_pbar = None
         if show_progress:
-            outer_iter = tqdm(outer_iter, total=len(all_conv), desc=f'{experiment_name} | ClarQ types', dynamic_ncols=True)
+            dialog_pbar = tqdm(
+                total=total_dialogues,
+                desc=f'{experiment_name} | ClarQ dialogues',
+                dynamic_ncols=True,
+            )
 
-        for i, one_type in outer_iter:
+        for i, one_type in enumerate(all_conv):
             if i not in eval_indices:
                 continue
-            for j, conv in enumerate(one_type):
+
+            for conv in one_type:
                 gold_r = conv['all_response'].strip().split('\n')
-                provider = provider_cls(gold_r, conv['background_splitted'], conv['gold_structure'], conv, provider_llm)
-                seeker = SeekerPlayer(conv['background_splitted'], seeker_llm, clarq_cfg.get('player_chat_mode', False))
+                provider = provider_cls(
+                    gold_r,
+                    conv['background_splitted'],
+                    conv['gold_structure'],
+                    conv,
+                    provider_llm,
+                )
+                seeker = SeekerPlayer(
+                    conv['background_splitted'],
+                    seeker_llm,
+                    clarq_cfg.get('player_chat_mode', False),
+                )
                 l2l_conv: list[str] = []
                 while True:
                     l2l_conv.append(provider.generate_response(l2l_conv))
@@ -135,6 +207,12 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
                     if provider.is_conv_end(l2l_conv) or len(l2l_conv) > max_turns_cap:
                         break
                 conv['l2l'][0] = l2l_conv
+
+                if dialog_pbar is not None:
+                    dialog_pbar.update(1)
+
+        if dialog_pbar is not None:
+            dialog_pbar.close()
 
         payload = {
             'meta': _conversation_meta(config, clarq_cfg),
@@ -145,7 +223,6 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
 
         metrics_path = None
         summary_path = None
-        metrics_df = summary_df = None
 
         if config.get('judge_model'):
             judge_backend = _build_unsteered_backend(
@@ -162,6 +239,13 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             write_csv(summary_path, summary_df)
 
         elapsed_sec = time.perf_counter() - started_at
+        print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
+        print(f"  results: {results_path}")
+        if metrics_path:
+            print(f"  metrics: {metrics_path}")
+        if summary_path:
+            print(f"  summary: {summary_path}")
+
         log_payload = {
             'experiment_name': experiment_name,
             'task_data_path': clarq_cfg['dataset_path'],
