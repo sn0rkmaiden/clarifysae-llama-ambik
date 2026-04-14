@@ -140,7 +140,7 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'meta': _conversation_meta(config, clarq_cfg),
             'data': all_conv,
         }
-        results_path = pred_dir / 'clarq_results.json'
+        results_path = run_dir / 'clarq_results.json'
         write_json(results_path, payload)
 
         metrics_path = None
