@@ -342,8 +342,8 @@ def run_eval(config: dict) -> dict[str, Any]:
 
     experiment_name = config['experiment_name']
     root_dir = Path(config['output']['root_dir'])
-    pred_dir = ensure_dir(root_dir / 'predictions' / experiment_name)
     run_dir = ensure_dir(root_dir / experiment_name)
+    pred_dir = ensure_dir(run_dir / 'predictions')
     ensure_dir(root_dir / 'logs')
 
     dataset = load_ambik_clarification_dataset(

@@ -98,7 +98,6 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
 
     experiment_name = config['experiment_name']
     root_dir = Path(config['output']['root_dir'])
-    pred_dir = ensure_dir(root_dir / 'predictions' / experiment_name)
     run_dir = ensure_dir(root_dir / experiment_name)
     ensure_dir(root_dir / 'logs')
 
