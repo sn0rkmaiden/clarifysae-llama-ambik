@@ -79,6 +79,7 @@ clarq:
 
 console:
   show_progress: true
+  suppress_transformers_warnings: true
 
 output:
   root_dir: outputs
