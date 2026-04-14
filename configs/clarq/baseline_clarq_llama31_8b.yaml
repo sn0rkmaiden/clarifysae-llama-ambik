@@ -57,7 +57,7 @@ judge_prompting:
 
 clarq:
   dataset_path: data/raw/clarq/English
-  evaluation_set: '0-2'
+  evaluation_set: '0'
   player_chat_mode: false
   multi_info_provider_agent: false
   max_turns_cap: 22
