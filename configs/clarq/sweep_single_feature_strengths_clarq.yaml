@@ -3,9 +3,9 @@ base_config: configs/clarq/8b_instruct_clarq_sweep_base.yaml
 
 sweep:
   mode: single_feature_strength
-  strengths: [0.5, 1.0, 2.0, 3.0, 5.0]
+  strengths: [-10.0, -5.0, -3.0, 1.0, 3.0, 5.0, 10.0]
   groups:
-    - vocab: C
+    - vocab: Q
       hookpoint: model.layers.27
       module_path: model.layers.27
       sae_file: resid_post_layer_27/trainer_1

@@ -14,7 +14,7 @@ generation:
   num_beams: 1
 
 prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 steering:
@@ -53,7 +53,7 @@ provider_generation:
   num_beams: 1
 
 provider_prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 judge_model:
@@ -69,13 +69,13 @@ judge_generation:
   num_beams: 1
 
 judge_prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 clarq:
   dataset_path: data/raw/clarq/English
   evaluation_set: '0'
-  player_chat_mode: false
+  player_chat_mode: true
   multi_info_provider_agent: false
   max_turns_cap: 22
 

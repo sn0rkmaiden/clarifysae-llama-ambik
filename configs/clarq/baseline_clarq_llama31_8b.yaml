@@ -15,7 +15,7 @@ generation:
   top_p: 1.0
 
 prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 steering:
@@ -35,7 +35,7 @@ provider_generation:
   top_p: 1.0
 
 provider_prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 judge_model:
@@ -52,13 +52,13 @@ judge_generation:
   top_p: 1.0
 
 judge_prompting:
-  use_chat_template: false
+  use_chat_template: true
   system_prompt: ''
 
 clarq:
   dataset_path: data/raw/clarq/English
   evaluation_set: '0'
-  player_chat_mode: false
+  player_chat_mode: true
   multi_info_provider_agent: false
   max_turns_cap: 22
 
