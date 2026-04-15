@@ -13,6 +13,7 @@ import torch
 
 from clarifysae_llama.config import dump_yaml, load_yaml, set_by_dotted_path
 from clarifysae_llama.runners.run_eval import run_eval
+from clarifysae_llama.runners.run_clarq_eval import run_clarq_eval
 from clarifysae_llama.utils.io import ensure_dir, write_csv, write_jsonl
 
 
@@ -42,6 +43,20 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'example_metrics_path',
     'aggregate_metrics_path',
     'category_metrics_path',
+]
+
+CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
+    'run_name',
+    'vocab',
+    'hookpoint',
+    'module_path',
+    'sae_file',
+    'feature_index',
+    'strength',
+    'config_path',
+    'results_path',
+    'metrics_path',
+    'summary_path',
 ]
 
 
@@ -358,6 +373,66 @@ def _flatten_run_artifacts(
     return kept_paths
 
 
+def _flatten_clarq_run_artifacts(
+        *,
+        sweep_dir: Path,
+        run_name: str,
+        result: dict[str, Any],
+        storage: dict[str, Any],
+    ) -> dict[str, Any]:
+        if storage.get('layout', 'flat') != 'flat':
+            return {
+                'results_path': result.get('results_path'),
+                'metrics_path': result.get('metrics_path'),
+                'summary_path': result.get('summary_path'),
+            }
+
+        results_dir = ensure_dir(sweep_dir / 'results')
+        metrics_dir = ensure_dir(sweep_dir / 'metrics')
+        summaries_dir = ensure_dir(sweep_dir / 'summaries')
+
+        kept_paths = {
+            'results_path': None,
+            'metrics_path': None,
+            'summary_path': None,
+        }
+
+        results_path = result.get('results_path')
+        metrics_path = result.get('metrics_path')
+        summary_path = result.get('summary_path')
+
+        if storage.get('keep_results', True):
+            kept_paths['results_path'] = _replace_file(
+                results_path,
+                results_dir / f'{run_name}__clarq_results.json',
+            )
+        else:
+            _safe_unlink(results_path)
+
+        if storage.get('keep_example_metrics', False):
+            kept_paths['metrics_path'] = _replace_file(
+                metrics_path,
+                metrics_dir / f'{run_name}__clarq_metrics.csv',
+            )
+        else:
+            _safe_unlink(metrics_path)
+
+        if storage.get('keep_aggregate_metrics', True):
+            kept_paths['summary_path'] = _replace_file(
+                summary_path,
+                summaries_dir / f'{run_name}__clarq_summary.csv',
+            )
+        else:
+            _safe_unlink(summary_path)
+
+        if storage.get('cleanup_tmp_run_dirs', True):
+            if results_path is not None:
+                run_dir = Path(results_path).parent
+                _safe_rmtree(run_dir)
+
+        return kept_paths
+
+
 def _merge_metadata(row: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     merged = dict(row)
     merged.update(metrics)
@@ -590,6 +665,153 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
         print(f'  category summary: {sweep_dir / "category_summary.csv"}')
 
 
+
+def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
+    _validate_single_feature_sweep_config(sweep_cfg)
+    sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage = _prepare_sweep_dirs(sweep_cfg, base_cfg)
+    strengths = sweep_cfg['sweep']['strengths']
+    groups = sweep_cfg['sweep']['groups']
+
+    total_runs = sum(len(group['features']) * len(strengths) for group in groups)
+    print(f"=== sweep :: {sweep_name} ===")
+    print('mode: clarq single_feature_strength')
+    print(f'total runs: {total_runs}')
+    print(f"storage layout: {storage.get('layout', 'flat')}")
+
+    manifest_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+    metrics_rows: list[dict[str, Any]] = []
+
+    seen_run_names: set[str] = set()
+    run_counter = 0
+
+    for group_idx, group in enumerate(groups):
+        vocab = group.get('vocab')
+        hookpoint = str(group['hookpoint'])
+        module_path = group.get('module_path')
+        sae_file = group.get('sae_file')
+        features = group['features']
+
+        for feature_index in features:
+            feature_index = int(feature_index)
+            for strength in strengths:
+                run_counter += 1
+                run_cfg = copy.deepcopy(base_cfg)
+                run_cfg['output']['root_dir'] = str(tmp_root)
+
+                # Turn steering on explicitly for ClarQ sweeps
+                if 'steering' not in run_cfg:
+                    run_cfg['steering'] = {}
+                set_by_dotted_path(run_cfg, 'steering.enabled', True)
+                set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
+                set_by_dotted_path(run_cfg, 'steering.feature_indices', [feature_index])
+                set_by_dotted_path(run_cfg, 'steering.strength', strength)
+
+                if module_path is not None:
+                    set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
+                if sae_file is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+
+                run_name = _build_single_feature_run_name(
+                    experiment_prefix=sweep_name,
+                    vocab=None if vocab is None else str(vocab),
+                    hookpoint=hookpoint,
+                    feature_index=feature_index,
+                    strength=strength,
+                )
+                if run_name in seen_run_names:
+                    raise ValueError(
+                        'Generated duplicate run name. Add a vocab label or adjust your sweep config: '
+                        f'{run_name}'
+                    )
+                seen_run_names.add(run_name)
+
+                run_cfg['experiment_name'] = run_name
+                run_cfg['run_metadata'] = {
+                    'sweep_name': sweep_name,
+                    'sweep_mode': 'clarq_single_feature_strength',
+                    'group_index': group_idx,
+                    'vocab': vocab,
+                    'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
+                    'feature_index': feature_index,
+                    'strength': strength,
+                }
+
+                cfg_path = None
+                if generated_cfg_dir is not None:
+                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    dump_yaml(cfg_path, run_cfg)
+
+                _emit_run_start(
+                    run_counter,
+                    total_runs,
+                    run_name=run_name,
+                    vocab=None if vocab is None else str(vocab),
+                    hookpoint=hookpoint,
+                    feature_index=feature_index,
+                    strength=strength,
+                    config_path=cfg_path,
+                )
+                try:
+                    result = run_clarq_eval(run_cfg)
+                    print(f"  finished: {run_name}")
+                finally:
+                    _release_cuda_memory()
+
+                summary_metrics = _load_single_row_csv(result.get('summary_path'))
+                run_metrics = _load_single_row_csv(result.get('metrics_path'))
+
+                flattened_paths = _flatten_clarq_run_artifacts(
+                    sweep_dir=sweep_dir,
+                    run_name=run_name,
+                    result=result,
+                    storage=storage,
+                )
+
+                manifest_row = {
+                    'run_name': run_name,
+                    'vocab': vocab,
+                    'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
+                    'feature_index': feature_index,
+                    'strength': strength,
+                    'config_path': str(cfg_path) if cfg_path is not None else None,
+                    'results_path': flattened_paths['results_path'],
+                    'metrics_path': flattened_paths['metrics_path'],
+                    'summary_path': flattened_paths['summary_path'],
+                }
+                manifest_rows.append(manifest_row)
+
+                if summary_metrics:
+                    summary_rows.append(_merge_metadata(manifest_row, summary_metrics))
+                if run_metrics:
+                    metrics_rows.append(_merge_metadata(manifest_row, run_metrics))
+
+    manifest_df = pd.DataFrame(manifest_rows, columns=CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS)
+    manifest_jsonl = sweep_dir / 'manifest.jsonl'
+    manifest_csv = sweep_dir / 'manifest.csv'
+    write_jsonl(manifest_jsonl, manifest_rows)
+    write_csv(manifest_csv, manifest_df)
+
+    if summary_rows:
+        write_csv(sweep_dir / 'clarq_summary.csv', pd.DataFrame(summary_rows))
+    if metrics_rows:
+        write_csv(sweep_dir / 'clarq_metrics.csv', pd.DataFrame(metrics_rows))
+
+    if storage.get('cleanup_tmp_run_dirs', True):
+        _safe_rmtree(tmp_root)
+
+    print(f"\nSweep finished: {sweep_name}")
+    print(f'  manifest: {manifest_csv}')
+    if summary_rows:
+        print(f'  summary: {sweep_dir / "clarq_summary.csv"}')
+    if metrics_rows:
+        print(f'  metrics: {sweep_dir / "clarq_metrics.csv"}')
+
+
 if __name__ == '__main__':
     args = parse_args()
     sweep_cfg = load_yaml(args.config)
@@ -597,10 +819,15 @@ if __name__ == '__main__':
 
     sweep_section = sweep_cfg.get('sweep', {})
     sweep_mode = sweep_section.get('mode', 'legacy')
+    is_clarq_base = 'clarq' in base_cfg
+
     if 'parameter' in sweep_section and 'values' in sweep_section:
         _run_legacy_sweep(sweep_cfg, base_cfg)
     elif sweep_mode == 'single_feature_strength':
-        _run_single_feature_strength_sweep(sweep_cfg, base_cfg)
+        if is_clarq_base:
+            _run_clarq_single_feature_strength_sweep(sweep_cfg, base_cfg)
+        else:
+            _run_single_feature_strength_sweep(sweep_cfg, base_cfg)
     else:
         raise ValueError(
             'Unsupported sweep config. Use either legacy sweep.parameter/sweep.values '

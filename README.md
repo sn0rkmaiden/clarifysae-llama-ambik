@@ -156,8 +156,6 @@ data/raw/clarq/English/
 data/raw/clarq/Chinese/
 ```
 
-You can copy these directly from the old `ClarQ-LLM-main/data/` tree.
-
 Example baseline run:
 
 ```bash
@@ -168,6 +166,12 @@ Example steered run:
 
 ```bash
 python -m clarifysae_llama.runners.run_clarq_eval --config configs/clarq/steer_clarq_llama31_8b.yaml
+```
+
+Example sweep run:
+
+```bash
+python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_feature_strengths_clarq.yaml
 ```
 
 Notes:

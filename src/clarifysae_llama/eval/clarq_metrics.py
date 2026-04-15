@@ -115,72 +115,97 @@ def parse_evaluation_set(raw: str) -> list[int]:
     return [int(raw)]
 
 
-def compute_metrics_for_payload(payload: dict[str, Any] | list[Any], judge_llm, evaluation_set: list[int]) -> dict[str, Any]:
-    meta: dict[str, Any] = {}
-    all_conv = payload
-    if isinstance(payload, dict) and 'data' in payload:
-        meta = payload.get('meta', {}) or {}
-        all_conv = payload['data']
+def _normalize_jax_lines(lines: list[str]) -> list[str]:
+    cleaned = [s[4:].strip() if s.lower().startswith("jax:") else s.strip() for s in lines]
+    if cleaned and detect_language(cleaned[0]) != "Chinese":
+        cleaned = [x.lower() for x in cleaned]
+    return [x.rstrip('，。？！,.?!') for x in cleaned]
 
-    success_sum = aqd_sum = arl_sum = step_sum = 0.0
-    cq_count_sum = cq_rate_sum = cq_depth_sum = goodbye_sum = 0.0
-    qlen_sum = 0.0
 
-    denom = 10 * len(evaluation_set) if evaluation_set else 1
+def _extract_dialogue_turns(h2l: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Returns:
+      helper: provider/Jax responses after the initial greeting
+      seeker: seeker utterances
+    """
+    helper: list[str] = []
+    seeker: list[str] = []
 
-    for i, one_type in enumerate(all_conv):
-        if i not in evaluation_set:
-            continue
-        for conv in one_type:
-            gold_r = conv['all_response'].split("\n")
-            for h2l in conv.get('l2l', []):
-                if not h2l:
-                    continue
+    for k, sent in enumerate(h2l[1:]):
+        if k % 2 == 1 and k != 1:
+            helper.append(sent)
+        elif k % 2 == 0:
+            seeker.append(sent.strip())
 
-                helper: list[str] = []
-                seeker: list[str] = []
-                for k, sent in enumerate(h2l[1:]):
-                    if k % 2 == 1 and k != 1:
-                        helper.append(sent)
-                    elif k % 2 == 0:
-                        seeker.append(sent.strip())
+    return helper, seeker
 
-                strict = evaluate_one_multi(gold_r, conv['all_response_exaplain'], helper, judge_llm)
-                success_sum += strict
-                aqd_sum += (len(helper) + 1 - len(gold_r))
 
-                if seeker:
-                    if detect_language(seeker[0]) != 'Chinese':
-                        arl_sum += sum(s.count(' ') for s in seeker) / len(seeker)
-                    else:
-                        arl_sum += sum(len(s) for s in seeker) / len(seeker)
+def _select_dialogue(conv: dict[str, Any]) -> tuple[int, list[str]]:
+    """
+    Prefer the first non-empty l2l slot. If all are empty, return slot 0 and [].
+    """
+    l2l = conv.get('l2l', []) or []
+    for idx, h2l in enumerate(l2l):
+        if h2l:
+            return idx, h2l
+    return 0, []
 
-                gold_norm = [s[4:].strip() if s.startswith('Jax:') else s.strip() for s in gold_r[1:]]
-                pred_norm = [s[4:].strip() if s.startswith('Jax:') else s.strip() for s in helper]
-                if gold_norm and detect_language(gold_norm[0]) != 'Chinese':
-                    gold_norm = [g.lower() for g in gold_norm]
-                    pred_norm = [p.lower() for p in pred_norm]
-                gold_clean = [x.rstrip('，。？！,.?!') for x in gold_norm]
-                pred_clean = [x.rstrip('，。？！,.?!') for x in pred_norm]
-                covered = sum(any(g in p for p in pred_clean) for g in gold_clean)
-                step_sum += covered / len(gold_clean) if gold_clean else 0.0
 
-                num_turns = len(seeker)
-                num_q = sum('?' in s for s in seeker)
-                cq_count_sum += num_q
-                cq_rate_sum += (num_q / num_turns) if num_turns > 0 else 0.0
+def _compute_dialogue_row(
+    *,
+    meta: dict[str, Any],
+    task_type_index: int,
+    dialogue_index: int,
+    dialogue_slot: int,
+    conv: dict[str, Any],
+    h2l: list[str],
+    judge_llm,
+) -> dict[str, Any]:
+    gold_r = conv['all_response'].split("\n")
+    gold_helper_lines = gold_r[1:]
+    gold_explain = conv.get('all_response_exaplain', [])
+    gold_structure = conv.get('gold_structure', [])
 
-                last_q = -1
-                for idx, s in enumerate(seeker):
-                    if '?' in s:
-                        last_q = idx
-                cq_depth_sum += (last_q + 1) if last_q >= 0 else 0
+    helper, seeker = _extract_dialogue_turns(h2l)
 
-                goodbye_sum += 1 if (seeker and 'goodbye' in seeker[-1].lower()) else 0
-                lengths = [s.count(' ') + 1 for s in seeker if '?' in s]
-                qlen_sum += (sum(lengths) / len(lengths)) if lengths else 0.0
+    gold_clean = _normalize_jax_lines(gold_helper_lines)
+    pred_clean = _normalize_jax_lines(helper)
+
+    if helper:
+        strict = evaluate_one_multi(gold_r, gold_explain, helper, judge_llm)
+    else:
+        strict = 0
+
+    aqd = (len(helper) + 1 - len(gold_r)) if gold_r else 0.0
+
+    if seeker:
+        if detect_language(seeker[0]) != 'Chinese':
+            arl = sum(s.count(' ') for s in seeker) / len(seeker)
+        else:
+            arl = sum(len(s) for s in seeker) / len(seeker)
+    else:
+        arl = 0.0
+
+    covered = sum(any(g in p for p in pred_clean) for g in gold_clean) if gold_clean else 0
+    step_recall = (covered / len(gold_clean)) if gold_clean else 0.0
+
+    num_turns = len(seeker)
+    num_q = sum('?' in s for s in seeker)
+    clarq_rate = (num_q / num_turns) if num_turns > 0 else 0.0
+
+    last_q = -1
+    for idx, s in enumerate(seeker):
+        if '?' in s:
+            last_q = idx
+    clarq_depth = (last_q + 1) if last_q >= 0 else 0
+
+    goodbye = 1 if (seeker and 'goodbye' in seeker[-1].lower()) else 0
+
+    q_lengths = [s.count(' ') + 1 for s in seeker if '?' in s]
+    clarq_len = (sum(q_lengths) / len(q_lengths)) if q_lengths else 0.0
 
     return {
+        # run metadata
         'seeker_agent_llm': meta.get('seeker_agent_llm'),
         'provider_agent_llm': meta.get('provider_agent_llm'),
         'judge_model': meta.get('judge_model'),
@@ -189,24 +214,113 @@ def compute_metrics_for_payload(payload: dict[str, Any] | list[Any], judge_llm, 
         'evaluation_set': meta.get('evaluation_set_arg') or meta.get('evaluation_set'),
         'steering_feature': (meta.get('steering') or {}).get('feature'),
         'steering_strength': (meta.get('steering') or {}).get('strength'),
-        'success_rate': success_sum / denom,
-        'AQD': aqd_sum / denom,
-        'ARL': arl_sum / denom,
-        'step_recall': step_sum / denom,
-        'ClarQ_count': cq_count_sum / denom,
-        'ClarQ_rate': cq_rate_sum / denom,
-        'ClarQ_depth': cq_depth_sum / denom,
-        'Goodbye_rate': goodbye_sum / denom,
-        'ClarQ_len': qlen_sum / denom,
+
+        # dialogue identifiers
+        'task_type_index': task_type_index,
+        'dialogue_index': dialogue_index,
+        'dialogue_slot': dialogue_slot,
+
+        # debugging / bookkeeping
+        'gold_steps': len(gold_clean),
+        'helper_turns': len(helper),
+        'seeker_turns': len(seeker),
+        'dialogue_present': 1 if h2l else 0,
+
+        # main metrics
+        'success': strict,
+        'AQD': aqd,
+        'ARL': arl,
+        'step_recall': step_recall,
+        'ClarQ_count': num_q,
+        'ClarQ_rate': clarq_rate,
+        'ClarQ_depth': clarq_depth,
+        'Goodbye': goodbye,
+        'ClarQ_len': clarq_len,
+    }
+
+
+def compute_metrics_for_payload(
+    payload: dict[str, Any] | list[Any],
+    judge_llm,
+    evaluation_set: list[int],
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    all_conv = payload
+    if isinstance(payload, dict) and 'data' in payload:
+        meta = payload.get('meta', {}) or {}
+        all_conv = payload['data']
+
+    rows: list[dict[str, Any]] = []
+
+    for task_type_index, one_type in enumerate(all_conv):
+        if task_type_index not in evaluation_set:
+            continue
+
+        for dialogue_index, conv in enumerate(one_type):
+            dialogue_slot, h2l = _select_dialogue(conv)
+            row = _compute_dialogue_row(
+                meta=meta,
+                task_type_index=task_type_index,
+                dialogue_index=dialogue_index,
+                dialogue_slot=dialogue_slot,
+                conv=conv,
+                h2l=h2l,
+                judge_llm=judge_llm,
+            )
+            rows.append(row)
+
+    denom = len(rows) if rows else 1
+
+    summary = {
+        'seeker_agent_llm': meta.get('seeker_agent_llm'),
+        'provider_agent_llm': meta.get('provider_agent_llm'),
+        'judge_model': meta.get('judge_model'),
+        'mode': meta.get('mode'),
+        'language': meta.get('language'),
+        'evaluation_set': meta.get('evaluation_set_arg') or meta.get('evaluation_set'),
+        'steering_feature': (meta.get('steering') or {}).get('feature'),
+        'steering_strength': (meta.get('steering') or {}).get('strength'),
+        'num_dialogues': denom,
+        'success_rate': sum(r['success'] for r in rows) / denom,
+        'AQD': sum(r['AQD'] for r in rows) / denom,
+        'ARL': sum(r['ARL'] for r in rows) / denom,
+        'step_recall': sum(r['step_recall'] for r in rows) / denom,
+        'ClarQ_count': sum(r['ClarQ_count'] for r in rows) / denom,
+        'ClarQ_rate': sum(r['ClarQ_rate'] for r in rows) / denom,
+        'ClarQ_depth': sum(r['ClarQ_depth'] for r in rows) / denom,
+        'Goodbye_rate': sum(r['Goodbye'] for r in rows) / denom,
+        'ClarQ_len': sum(r['ClarQ_len'] for r in rows) / denom,
+    }
+
+    return {
+        'rows': rows,
+        'summary': summary,
     }
 
 
 def metrics_to_dataframes(metrics: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    overall_df = pd.DataFrame([metrics])
-    display_cols = [
-        'success_rate', 'AQD', 'ARL', 'step_recall', 'ClarQ_count',
-        'ClarQ_rate', 'ClarQ_depth', 'Goodbye_rate', 'ClarQ_len',
-        'steering_feature', 'steering_strength', 'language', 'evaluation_set',
+    rows = metrics.get('rows', [])
+    summary = metrics.get('summary', {})
+
+    metrics_df = pd.DataFrame(rows)
+
+    summary_cols = [
+        'success_rate',
+        'AQD',
+        'ARL',
+        'step_recall',
+        'ClarQ_count',
+        'ClarQ_rate',
+        'ClarQ_depth',
+        'Goodbye_rate',
+        'ClarQ_len',
+        'num_dialogues',
+        'steering_feature',
+        'steering_strength',
+        'language',
+        'evaluation_set',
     ]
-    summary_df = overall_df[[c for c in display_cols if c in overall_df.columns]].copy()
-    return overall_df, summary_df
+    summary_df = pd.DataFrame([summary])
+    summary_df = summary_df[[c for c in summary_cols if c in summary_df.columns]].copy()
+
+    return metrics_df, summary_df

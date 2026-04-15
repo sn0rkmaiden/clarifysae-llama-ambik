@@ -5,13 +5,12 @@ from typing import Any, Iterable
 
 class BackendLLMAdapter:
     """
-    Thin adapter that makes the current backend look like the old ClarQ code's
-    expected LLM interface.
+    Adapter that makes the current backend look like the old ClarQ code's LLM interface.
 
-    Important behavior:
-    - For normal dialogue turns, truncate generation to a single seeker turn.
-    - For json_format=True, keep only the JSON-ish object text.
-    - Accept legacy extra kwargs like previous_message and ignore them.
+    Goals:
+    - keep only a single seeker turn for normal dialogue generation
+    - preserve JSON-ish outputs for provider/judge prompts
+    - accept legacy kwargs like previous_message
     """
 
     def __init__(self, backend: Any):
@@ -78,40 +77,83 @@ class BackendLLMAdapter:
 
         return text[:cut]
 
-    def _truncate_to_single_turn(self, text: str) -> str:
-        text = (text or "").strip()
-
-        markers = [
-            "\nJax:",
-            "\nYou:",
-            "\nUser:",
-            "\nAssistant:",
-            "\nHuman:",
-            "\nPlease wait",
-            "\n(Note:",
-            "\n## ",
-            "```",
-        ]
-
+    def _cut_at_any_marker(self, text: str, markers: list[str]) -> str:
         cut = len(text)
         for marker in markers:
             idx = text.find(marker)
             if idx != -1:
                 cut = min(cut, idx)
+        return text[:cut]
 
-        text = text[:cut].strip()
+    def _strip_wrapping_quotes(self, text: str) -> str:
+        text = text.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+            return text[1:-1].strip()
+        return text
 
+    def _truncate_to_single_turn(self, text: str) -> str:
+        """
+        Keep only the first actual seeker utterance.
+
+        This removes:
+        - fake continuation into another speaker turn
+        - leaked prompt instructions
+        - markdown/code artifacts
+        - ClarQ template leftovers like 'Please respond...' / 'Please generate...'
+        """
+        text = (text or "").strip()
+
+        # Hard cuts for extra dialogue turns
+        turn_markers = [
+            "\nJax:",
+            "\nYou:",
+            "\nUser:",
+            "\nAssistant:",
+            "\nHuman:",
+        ]
+        text = self._cut_at_any_marker(text, turn_markers).strip()
+
+        # Hard cuts for leaked instructions / prompt remnants
+        instruction_markers = [
+            "\nPlease respond",
+            "\nPlease generate",
+            "\nRespond to Jax",
+            "\nGenerate a response from Jax",
+            "\nNow, based on the previous conversation",
+            "\nThe final answer is:",
+            "\n## ",
+            "\n---",
+            "\n(Note:",
+            "\nNote:",
+            "```",
+            "Please respond to Jax's previous message",
+            "Please generate a response from Jax",
+            "Now, based on the previous conversation, generate a reply to Jax.",
+            "The final answer is:",
+            "## Step",
+            "---",
+            "(Note:",
+            "Note:",
+        ]
+        text = self._cut_at_any_marker(text, instruction_markers).strip()
+
+        # Remove common speaker prefixes if they remain
         prefixes = ["You:", "User:", "Assistant:", "Human:"]
         changed = True
         while changed:
             changed = False
             for prefix in prefixes:
                 if text.startswith(prefix):
-                    text = text[len(prefix):].strip()
+                    text = text[len(prefix) :].strip()
                     changed = True
 
-        if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
-            text = text[1:-1].strip()
+        text = self._strip_wrapping_quotes(text)
+
+        # Remove trailing unmatched quote if generation got cut mid-string
+        if text.count('"') % 2 == 1 and text.endswith('"'):
+            text = text[:-1].rstrip()
+        if text.count("'") % 2 == 1 and text.endswith("'"):
+            text = text[:-1].rstrip()
 
         return text
 
@@ -125,8 +167,6 @@ class BackendLLMAdapter:
     ):
         """
         Returns (response_text, metadata) to match the legacy ClarQ interface.
-
-        Parameters like previous_message are accepted for compatibility and ignored.
         """
         _ = previous_message
         _ = kwargs
