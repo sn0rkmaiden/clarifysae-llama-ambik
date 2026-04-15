@@ -5,13 +5,13 @@ from typing import Any, Iterable
 
 class BackendLLMAdapter:
     """
-    Thin adapter that makes the current HF backend look like the old ClarQ code's
+    Thin adapter that makes the current backend look like the old ClarQ code's
     expected LLM interface.
 
     Important behavior:
-    - For normal dialogue turns, truncate generation to a *single seeker turn*.
+    - For normal dialogue turns, truncate generation to a single seeker turn.
     - For json_format=True, keep only the JSON-ish object text.
-    - Respect stop sequences when possible.
+    - Accept legacy extra kwargs like previous_message and ignore them.
     """
 
     def __init__(self, backend: Any):
@@ -51,10 +51,6 @@ class BackendLLMAdapter:
         return None
 
     def _coerce_json_text(self, text: str) -> str:
-        """
-        Keep only the most likely JSON/object span.
-        This is for provider/judge prompts that expect a structured response.
-        """
         text = (text or "").strip()
         if not text:
             return "{}"
@@ -83,11 +79,6 @@ class BackendLLMAdapter:
         return text[:cut]
 
     def _truncate_to_single_turn(self, text: str) -> str:
-        """
-        The seeker prompt ends with `You:` and local Llama often continues the whole
-        transcript (`Jax: ...`, `You: ...`, notes, markdown, etc.).
-        We keep only the first seeker utterance.
-        """
         text = (text or "").strip()
 
         markers = [
@@ -110,17 +101,15 @@ class BackendLLMAdapter:
 
         text = text[:cut].strip()
 
-        # Clean common prefixes
         prefixes = ["You:", "User:", "Assistant:", "Human:"]
         changed = True
         while changed:
             changed = False
             for prefix in prefixes:
                 if text.startswith(prefix):
-                    text = text[len(prefix) :].strip()
+                    text = text[len(prefix):].strip()
                     changed = True
 
-        # Strip wrapping quotes once
         if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
             text = text[1:-1].strip()
 
@@ -130,20 +119,24 @@ class BackendLLMAdapter:
         self,
         prompt_text: str,
         stop: str | Iterable[str] | None = None,
+        previous_message: Any = None,
         json_format: bool = False,
+        **kwargs,
     ):
         """
         Returns (response_text, metadata) to match the legacy ClarQ interface.
+
+        Parameters like previous_message are accepted for compatibility and ignored.
         """
+        _ = previous_message
+        _ = kwargs
+
         try:
             response = self.backend.generate(prompt_text, stop=stop)
         except TypeError:
-            # Current backend.generate usually does not accept stop.
             response = self.backend.generate(prompt_text)
 
         response = "" if response is None else str(response)
-
-        # First apply explicit stop strings, if any were provided.
         response = self._apply_stop(response, stop)
 
         if json_format:
