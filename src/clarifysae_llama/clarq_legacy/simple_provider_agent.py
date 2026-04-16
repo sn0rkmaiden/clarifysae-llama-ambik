@@ -96,7 +96,7 @@ class helper:
             if self.chinese:
                 strat_word = 'Jax: 有什么可以帮助你？'
             else:
-                strat_word = 'Jax: what can help you?'
+                strat_word = 'Jax: What can I help you with?'
             return strat_word
         
         if self.count == 0:
