@@ -157,6 +157,34 @@ class BackendLLMAdapter:
 
         return text
 
+
+    def _normalize_chat_messages(self, previous_message: Any, prompt_text: str) -> list[dict[str, str]] | None:
+        if not previous_message:
+            return None
+        if not isinstance(previous_message, list):
+            return None
+
+        messages: list[dict[str, str]] = []
+        for message in previous_message:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get('role', 'user')).strip().lower() or 'user'
+            if role not in {'system', 'user', 'assistant'}:
+                role = 'user'
+            content = message.get('content', '')
+            messages.append({'role': role, 'content': '' if content is None else str(content)})
+
+        if not messages:
+            return None
+
+        prompt_text = (prompt_text or '').strip()
+        if prompt_text:
+            last_message = messages[-1]
+            if not (last_message['role'] == 'user' and last_message['content'].strip() == prompt_text):
+                messages.append({'role': 'user', 'content': prompt_text})
+
+        return messages
+
     def request(
         self,
         prompt_text: str,
@@ -168,13 +196,16 @@ class BackendLLMAdapter:
         """
         Returns (response_text, metadata) to match the legacy ClarQ interface.
         """
-        _ = previous_message
         _ = kwargs
 
-        try:
-            response = self.backend.generate(prompt_text, stop=stop)
-        except TypeError:
-            response = self.backend.generate(prompt_text)
+        chat_messages = self._normalize_chat_messages(previous_message, prompt_text)
+        if chat_messages is not None and hasattr(self.backend, 'generate_messages'):
+            response = self.backend.generate_messages(chat_messages)
+        else:
+            try:
+                response = self.backend.generate(prompt_text, stop=stop)
+            except TypeError:
+                response = self.backend.generate(prompt_text)
 
         response = "" if response is None else str(response)
         response = self._apply_stop(response, stop)

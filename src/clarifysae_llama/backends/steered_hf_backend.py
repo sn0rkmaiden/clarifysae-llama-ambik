@@ -43,6 +43,15 @@ class SteeredHFCausalBackend(HFCausalBackend):
         finally:
             self.steering.detach()
 
+
+    def generate_messages(self, messages: list[dict]) -> str:
+        self.steering.reset()
+        self.steering.attach()
+        try:
+            return super().generate_messages(messages)
+        finally:
+            self.steering.detach()
+
     def generate_batch(self, prompts: list[str]) -> list[str]:
         self.steering.reset()
         self.steering.attach()

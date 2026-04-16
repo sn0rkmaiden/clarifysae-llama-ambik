@@ -162,10 +162,22 @@ class helper:
             if '再见' == conv[-1] or '再见！' in conv[-1] or '再见。' in conv[-1] or '再见，' in conv[-1] or '再见!' in conv[-1] or '再见.' in conv[-1] or '再见,' in conv[-1] or '再见Jax' in conv[-1] or '，再见' in conv[-1] or '。再见' in conv[-1] or '.再见' in conv[-1] or ',再见' in conv[-1] or ' 再见' in conv[-1] or '再见 ' in conv[-1] or '\n再见' in conv[-1] or '再见\n' in conv[-1]:
                 return True
         else:
-            if 'Goodbye' == conv[-1]  or 'Goodbye!' in conv[-1] or 'Goodbye.' in conv[-1] or 'Goodbye,' in conv[-1] or 'Goodbye Jax' in conv[-1] or ', Goodbye' in conv[-1] or '. Goodbye' in conv[-1] or '.Goodbye' in conv[-1] or ',Goodbye' in conv[-1] or ' Goodbye' in conv[-1] or 'Goodbye ' in conv[-1] or '\nGoodbye' in conv[-1] or 'Goodbye\n' in conv[-1]:
+            last_msg = conv[-1].lower()
+            if ('goodbye' == last_msg.strip()
+                or 'goodbye!' in last_msg
+                or 'goodbye.' in last_msg
+                or 'goodbye,' in last_msg
+                or 'goodbye jax' in last_msg
+                or ', goodbye' in last_msg
+                or '. goodbye' in last_msg
+                or '.goodbye' in last_msg
+                or ',goodbye' in last_msg
+                or ' goodbye' in last_msg
+                or 'goodbye ' in last_msg
+                or '\ngoodbye' in last_msg
+                or 'goodbye\n' in last_msg):
                 return True
-            last_msg = conv[-1].lower() 
-            if 'thank you' in last_msg and 'help' in last_msg or "I'm ready to" in conv[-1]:  
-                return True 
+            if ('thank you' in last_msg and 'help' in last_msg) or "i'm ready to" in last_msg:
+                return True
         return False
 

@@ -96,19 +96,58 @@ class HFCausalBackend:
                 )
         return requested and bool(getattr(self.tokenizer, 'chat_template', None))
 
-    def _format_prompt(self, prompt: str) -> str:
-        if not self._should_use_chat_template():
-            return prompt
+    def _stringify_message_content(self, content: Any) -> str:
+        if content is None:
+            return ''
+        if isinstance(content, str):
+            return content
+        return str(content)
 
-        messages = []
-        if self.system_prompt:
-            messages.append({'role': 'system', 'content': self.system_prompt})
-        messages.append({'role': 'user', 'content': prompt})
+    def _normalize_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise TypeError(f'Message must be a dict, got {type(message)!r}')
+            role = str(message.get('role', 'user')).strip().lower() or 'user'
+            if role not in {'system', 'user', 'assistant'}:
+                role = 'user'
+            normalized.append({
+                'role': role,
+                'content': self._stringify_message_content(message.get('content', '')),
+            })
+        return normalized
+
+    def _flatten_messages(self, messages: list[dict[str, str]]) -> str:
+        role_labels = {
+            'system': 'System',
+            'user': 'User',
+            'assistant': 'Assistant',
+        }
+        parts: list[str] = []
+        if self.system_prompt and not any(msg['role'] == 'system' for msg in messages):
+            parts.append(f"System: {self.system_prompt}")
+        for message in messages:
+            role_label = role_labels.get(message['role'], 'User')
+            parts.append(f"{role_label}: {message['content']}")
+        parts.append('Assistant:')
+        return '\n\n'.join(parts)
+
+    def _format_messages(self, messages: list[dict[str, Any]]) -> str:
+        normalized = self._normalize_messages(messages)
+        if not self._should_use_chat_template():
+            return self._flatten_messages(normalized)
+
+        if self.system_prompt and not any(msg['role'] == 'system' for msg in normalized):
+            normalized = [{'role': 'system', 'content': self.system_prompt}, *normalized]
+
         return self.tokenizer.apply_chat_template(
-            messages,
+            normalized,
             tokenize=False,
             add_generation_prompt=True,
         )
+
+    def _format_prompt(self, prompt: str) -> str:
+        return self._format_messages([{'role': 'user', 'content': prompt}])
 
     def _format_prompts(self, prompts: list[str]) -> list[str]:
         return [self._format_prompt(prompt) for prompt in prompts]
@@ -125,6 +164,15 @@ class HFCausalBackend:
     @torch.inference_mode()
     def generate(self, prompt: str) -> str:
         prompt = self._format_prompt(prompt)
+        inputs = self.tokenizer(prompt, return_tensors='pt')
+        inputs = self._inputs_to_model_device(inputs)
+        output = self.model.generate(**inputs, **self.generation_kwargs)
+        prompt_width = int(inputs['input_ids'].shape[1])
+        return self._decode_new_tokens(self.tokenizer, output[0], prompt_width)
+
+    @torch.inference_mode()
+    def generate_messages(self, messages: list[dict[str, Any]]) -> str:
+        prompt = self._format_messages(messages)
         inputs = self.tokenizer(prompt, return_tensors='pt')
         inputs = self._inputs_to_model_device(inputs)
         output = self.model.generate(**inputs, **self.generation_kwargs)
