@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import os
+import re
 import time
 import warnings
 from pathlib import Path
@@ -20,6 +21,7 @@ from clarifysae_llama.clarq_legacy.provider_agent import helpers as GeneralProvi
 from clarifysae_llama.clarq_legacy.seeker_agent import player as SeekerPlayer
 from clarifysae_llama.clarq_legacy.utils import data_combination, read_path
 from clarifysae_llama.config import load_yaml
+from clarifysae_llama.eval.clarq_html_report import build_clarq_html_report
 from clarifysae_llama.eval.clarq_metrics import (
     compute_metrics_for_payload,
     metrics_to_dataframes,
@@ -120,6 +122,21 @@ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dic
     }
 
 
+def _slugify_filename_part(value: str) -> str:
+    slug = re.sub(r'[^A-Za-z0-9._-]+', '_', value.strip())
+    slug = re.sub(r'_+', '_', slug).strip('._-')
+    return slug or 'run'
+
+
+def _build_artifact_basename(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> str:
+    experiment_slug = _slugify_filename_part(str(config.get('experiment_name', 'clarq_eval')))
+    mode = 'chat' if clarq_cfg.get('player_chat_mode', False) else 'comp'
+    eval_set = _slugify_filename_part(str(clarq_cfg.get('evaluation_set', '0-25')))
+    steering_enabled = bool((config.get('steering') or {}).get('enabled', False))
+    steering_tag = 'steered' if steering_enabled else 'baseline'
+    return f'{experiment_slug}__{mode}__evalset_{eval_set}__{steering_tag}'
+
+
 def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
     console_cfg = _configure_console(config)
     set_seed(int(config.get('seed', 42)))
@@ -133,6 +150,7 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
     root_dir = Path(config['output']['root_dir'])
     run_dir = ensure_dir(root_dir / experiment_name)
     ensure_dir(root_dir / 'logs')
+    artifact_basename = _build_artifact_basename(config, clarq_cfg)
 
     raw_data = read_path(clarq_cfg['dataset_path'])
     if not raw_data:
@@ -218,11 +236,12 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'meta': _conversation_meta(config, clarq_cfg),
             'data': all_conv,
         }
-        results_path = run_dir / 'clarq_results.json'
+        results_path = run_dir / f'{artifact_basename}__clarq_results.json'
         write_json(results_path, payload)
 
         metrics_path = None
         summary_path = None
+        report_path = None
 
         if config.get('judge_model'):
             judge_backend = _build_unsteered_backend(
@@ -233,10 +252,19 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             judge_llm = BackendLLMAdapter(judge_backend)
             metrics = compute_metrics_for_payload(payload, judge_llm, eval_indices)
             metrics_df, summary_df = metrics_to_dataframes(metrics)
-            metrics_path = run_dir / 'tables' / 'clarq_metrics.csv'
-            summary_path = run_dir / 'tables' / 'clarq_summary.csv'
+            metrics_path = run_dir / 'tables' / f'{artifact_basename}__clarq_metrics.csv'
+            summary_path = run_dir / 'tables' / f'{artifact_basename}__clarq_summary.csv'
             write_csv(metrics_path, metrics_df)
             write_csv(summary_path, summary_df)
+
+        if bool(clarq_cfg.get('write_html_report', True)):
+            report_path = run_dir / 'report' / f'{artifact_basename}__clarq_report.html'
+            build_clarq_html_report(
+                payload=payload,
+                output_path=report_path,
+                metrics_path=metrics_path,
+                summary_path=summary_path,
+            )
 
         elapsed_sec = time.perf_counter() - started_at
         print(f"completed: {experiment_name} in {elapsed_sec:.1f}s")
@@ -245,6 +273,8 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             print(f"  metrics: {metrics_path}")
         if summary_path:
             print(f"  summary: {summary_path}")
+        if report_path:
+            print(f"  report: {report_path}")
 
         log_payload = {
             'experiment_name': experiment_name,
@@ -257,6 +287,7 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'results_path': str(results_path),
             'metrics_path': str(metrics_path) if metrics_path else None,
             'summary_path': str(summary_path) if summary_path else None,
+            'report_path': str(report_path) if report_path else None,
             'elapsed_sec': elapsed_sec,
         }
         log_run(root_dir / 'logs' / 'runs.jsonl', log_payload)
@@ -266,6 +297,7 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'results_path': str(results_path),
             'metrics_path': str(metrics_path) if metrics_path else None,
             'summary_path': str(summary_path) if summary_path else None,
+            'report_path': str(report_path) if report_path else None,
             'elapsed_sec': elapsed_sec,
         }
     finally:

@@ -61,6 +61,7 @@ clarq:
   player_chat_mode: true
   multi_info_provider_agent: false
   max_turns_cap: 22
+  write_html_report: true
 
 console:
   show_progress: true
