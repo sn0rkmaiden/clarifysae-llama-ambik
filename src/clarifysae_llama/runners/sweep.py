@@ -57,6 +57,7 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'results_path',
     'metrics_path',
     'summary_path',
+    'report_path',
 ]
 
 
@@ -385,21 +386,25 @@ def _flatten_clarq_run_artifacts(
                 'results_path': result.get('results_path'),
                 'metrics_path': result.get('metrics_path'),
                 'summary_path': result.get('summary_path'),
+                'report_path': result.get('report_path'),
             }
 
         results_dir = ensure_dir(sweep_dir / 'results')
         metrics_dir = ensure_dir(sweep_dir / 'metrics')
         summaries_dir = ensure_dir(sweep_dir / 'summaries')
+        reports_dir = ensure_dir(sweep_dir / 'reports')
 
         kept_paths = {
             'results_path': None,
             'metrics_path': None,
             'summary_path': None,
+            'report_path': None,
         }
 
         results_path = result.get('results_path')
         metrics_path = result.get('metrics_path')
         summary_path = result.get('summary_path')
+        report_path = result.get('report_path')
 
         if storage.get('keep_results', True):
             kept_paths['results_path'] = _replace_file(
@@ -409,7 +414,11 @@ def _flatten_clarq_run_artifacts(
         else:
             _safe_unlink(results_path)
 
-        if storage.get('keep_example_metrics', False):
+        keep_clarq_metrics = storage.get('keep_clarq_metrics')
+        if keep_clarq_metrics is None:
+            keep_clarq_metrics = storage.get('keep_example_metrics', True)
+
+        if keep_clarq_metrics:
             kept_paths['metrics_path'] = _replace_file(
                 metrics_path,
                 metrics_dir / f'{run_name}__clarq_metrics.csv',
@@ -424,6 +433,14 @@ def _flatten_clarq_run_artifacts(
             )
         else:
             _safe_unlink(summary_path)
+
+        if storage.get('keep_results', True):
+            kept_paths['report_path'] = _replace_file(
+                report_path,
+                reports_dir / f'{run_name}__clarq_report.html',
+            )
+        else:
+            _safe_unlink(report_path)
 
         if storage.get('cleanup_tmp_run_dirs', True):
             if results_path is not None:
@@ -782,6 +799,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     'results_path': flattened_paths['results_path'],
                     'metrics_path': flattened_paths['metrics_path'],
                     'summary_path': flattened_paths['summary_path'],
+                    'report_path': flattened_paths['report_path'],
                 }
                 manifest_rows.append(manifest_row)
 
@@ -810,6 +828,9 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
         print(f'  summary: {sweep_dir / "clarq_summary.csv"}')
     if metrics_rows:
         print(f'  metrics: {sweep_dir / "clarq_metrics.csv"}')
+    reports_dir = sweep_dir / 'reports'
+    if reports_dir.exists():
+        print(f'  reports: {reports_dir}')
 
 
 if __name__ == '__main__':
