@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
+import json
 import re
 import shutil
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +60,21 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'results_path',
     'metrics_path',
     'summary_path',
+    'report_path',
+]
+
+CLARQ_COMPACT_SUMMARY_COLUMNS = [
+    'run_name',
+    'feature_index',
+    'strength',
+    'success_rate',
+    'step_recall',
+    'ClarQ_count',
+    'ClarQ_rate',
+    'ClarQ_depth',
+    'Goodbye_rate',
+    'ARL',
+    'AQD',
     'report_path',
 ]
 
@@ -120,6 +138,10 @@ def _storage_defaults() -> dict[str, Any]:
         'keep_example_metrics': False,
         'keep_aggregate_metrics': False,
         'keep_category_metrics': False,
+        'keep_clarq_metrics': True,
+        'keep_clarq_summary': True,
+        'keep_clarq_report': True,
+        'keep_clarq_feature_dashboards': True,
         'cleanup_tmp_run_dirs': True,
     }
 
@@ -260,6 +282,372 @@ def _load_multi_row_csv(path: str | Path | None) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _load_clarq_payload(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    payload_path = Path(path)
+    if not payload_path.exists():
+        return {}
+    return json.loads(payload_path.read_text())
+
+
+def _strength_sort_key(value: Any) -> tuple[int, Any]:
+    try:
+        return (0, float(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
+
+
+def _is_missing(value: Any) -> bool:
+    return pd.isna(value) if not isinstance(value, (list, dict, tuple, set)) else False
+
+
+def _display_value(value: Any, *, digits: int = 4) -> str:
+    if value is None or _is_missing(value):
+        return '—'
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f'{value:.{digits}f}'.rstrip('0').rstrip('.')
+    return str(value)
+
+
+def _dialogue_metric_lookup(rows: list[dict[str, Any]]) -> dict[tuple[int, int], dict[str, Any]]:
+    lookup: dict[tuple[int, int], dict[str, Any]] = {}
+    for row in rows:
+        try:
+            key = (int(row.get('task_type_index', 0)), int(row.get('dialogue_index', 0)))
+        except (TypeError, ValueError):
+            continue
+        lookup[key] = row
+    return lookup
+
+
+def _extract_clarq_dialogues(results_path: str | Path | None, run_metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    payload = _load_clarq_payload(results_path)
+    if not payload:
+        return []
+    lookup = _dialogue_metric_lookup(run_metric_rows)
+    dialogues: list[dict[str, Any]] = []
+    for task_type_index, one_type in enumerate(payload.get('data', [])):
+        for dialogue_index, conv in enumerate(one_type):
+            background_splitted = conv.get('background_splitted') or []
+            task_name = background_splitted[1] if len(background_splitted) > 1 else ''
+            transcript = ((conv.get('l2l') or [[]])[0]) or []
+            dialogues.append({
+                'task_type_index': task_type_index,
+                'dialogue_index': dialogue_index,
+                'task_name': task_name,
+                'background': conv.get('background', ''),
+                'gold_hints': conv.get('all_response_exaplain') or conv.get('all_response_explain') or [],
+                'gold_structure': conv.get('gold_structure') or [],
+                'transcript': transcript,
+                'metrics': lookup.get((task_type_index, dialogue_index), {}),
+            })
+    return dialogues
+
+
+def _feature_group_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        row.get('vocab'),
+        row.get('hookpoint'),
+        row.get('module_path'),
+        row.get('sae_file'),
+        row.get('feature_index'),
+    )
+
+
+def _feature_dashboard_filename(row: dict[str, Any]) -> str:
+    parts = []
+    if row.get('vocab') not in (None, ''):
+        parts.append(_sanitize_token(row['vocab']))
+    parts.extend([_short_hookpoint(str(row.get('hookpoint', 'hook'))), f"feat{_sanitize_token(row.get('feature_index', 'na'))}"])
+    digest = hashlib.md5(repr(_feature_group_key(row)).encode('utf-8')).hexdigest()[:8]
+    parts.append(digest)
+    return '__'.join(parts) + '.html'
+
+
+def _transcript_html(transcript: list[str]) -> str:
+    blocks = []
+    for idx, utterance in enumerate(transcript):
+        speaker = 'Jax' if idx % 2 == 0 else 'Seeker'
+        role_class = 'jax' if idx % 2 == 0 else 'seeker'
+        blocks.append(
+            f"<div class='turn {role_class}'><div class='speaker'>{escape(speaker)}</div><div class='utterance'>{escape(str(utterance)).replace(chr(10), '<br>')}</div></div>"
+        )
+    return ''.join(blocks) or "<div class='empty'>No transcript available.</div>"
+
+
+def _dialogue_summary_table(dialogues: list[dict[str, Any]]) -> str:
+    rows = []
+    for dialogue in dialogues:
+        metrics = dialogue.get('metrics', {})
+        rows.append(
+            '<tr>'
+            f"<td>{dialogue['task_type_index']}</td>"
+            f"<td>{dialogue['dialogue_index']}</td>"
+            f"<td>{escape(dialogue.get('task_name') or '—')}</td>"
+            f"<td>{_display_value(metrics.get('success'))}</td>"
+            f"<td>{_display_value(metrics.get('step_recall'))}</td>"
+            f"<td>{_display_value(metrics.get('ClarQ_count'))}</td>"
+            f"<td>{_display_value(metrics.get('Goodbye'))}</td>"
+            '</tr>'
+        )
+    return ''.join(rows)
+
+
+def _dialogues_html(dialogues: list[dict[str, Any]]) -> str:
+    parts = []
+    for dialogue in dialogues:
+        metrics = dialogue.get('metrics', {})
+        gold_hints = dialogue.get('gold_hints') or []
+        gold_structure = dialogue.get('gold_structure') or []
+        hints_html = ''.join(f'<li>{escape(str(item))}</li>' for item in gold_hints) or '<li>—</li>'
+        structure_html = ', '.join(escape(str(item)) for item in gold_structure) or '—'
+        summary_bits = [
+            f"task_type={dialogue['task_type_index']}",
+            f"dialogue={dialogue['dialogue_index']}",
+            f"success={_display_value(metrics.get('success'))}",
+            f"step_recall={_display_value(metrics.get('step_recall'))}",
+            f"ClarQ_count={_display_value(metrics.get('ClarQ_count'))}",
+            f"Goodbye={_display_value(metrics.get('Goodbye'))}",
+        ]
+        parts.append(
+            '<details class="dialogue">'
+            f"<summary>{escape(dialogue.get('task_name') or 'Dialogue')} <span class='meta'>{escape(' • '.join(summary_bits))}</span></summary>"
+            "<div class='dialogue-body'>"
+            f"<div class='dialogue-section'><div class='section-title'>Gold structure</div><div>{structure_html}</div></div>"
+            f"<div class='dialogue-section'><div class='section-title'>Gold clarification targets</div><ul>{hints_html}</ul></div>"
+            f"<div class='dialogue-section'><div class='section-title'>Transcript</div>{_transcript_html(dialogue.get('transcript') or [])}</div>"
+            '</div>'
+            '</details>'
+        )
+    return ''.join(parts) or "<div class='empty'>No dialogues available.</div>"
+
+
+def _build_clarq_feature_dashboard_html(
+    *,
+    sweep_name: str,
+    group_rows: list[dict[str, Any]],
+    metrics_rows_by_run: dict[str, list[dict[str, Any]]],
+) -> str:
+    ordered_rows = sorted(group_rows, key=lambda row: _strength_sort_key(row.get('strength')))
+    first_row = ordered_rows[0]
+
+    overview_rows = []
+    panels = []
+    selector_options = ["<option value='all'>All strengths</option>"]
+
+    for idx, row in enumerate(ordered_rows):
+        strength = row.get('strength')
+        strength_token = _sanitize_token(strength)
+        run_name = row['run_name']
+        dialogues = _extract_clarq_dialogues(row.get('results_path'), metrics_rows_by_run.get(run_name, []))
+
+        selector_options.append(
+            f"<option value='{escape(strength_token)}'>{escape(_display_value(strength))}</option>"
+        )
+        overview_rows.append(
+            '<tr>'
+            f"<td><button class='link-button' data-strength-target='{escape(strength_token)}'>{escape(_display_value(strength))}</button></td>"
+            f"<td>{_display_value(row.get('success_rate'))}</td>"
+            f"<td>{_display_value(row.get('step_recall'))}</td>"
+            f"<td>{_display_value(row.get('ClarQ_count'))}</td>"
+            f"<td>{_display_value(row.get('ClarQ_rate'))}</td>"
+            f"<td>{_display_value(row.get('ClarQ_depth'))}</td>"
+            f"<td>{_display_value(row.get('Goodbye_rate'))}</td>"
+            f"<td>{_display_value(row.get('ARL'))}</td>"
+            f"<td>{_display_value(row.get('AQD'))}</td>"
+            '</tr>'
+        )
+
+        summary_cards = ''.join([
+            f"<div class='card'><div class='label'>Strength</div><div class='value'>{escape(_display_value(strength))}</div></div>",
+            f"<div class='card'><div class='label'>Success rate</div><div class='value'>{_display_value(row.get('success_rate'))}</div></div>",
+            f"<div class='card'><div class='label'>Step recall</div><div class='value'>{_display_value(row.get('step_recall'))}</div></div>",
+            f"<div class='card'><div class='label'>ClarQ count</div><div class='value'>{_display_value(row.get('ClarQ_count'))}</div></div>",
+            f"<div class='card'><div class='label'>ClarQ rate</div><div class='value'>{_display_value(row.get('ClarQ_rate'))}</div></div>",
+            f"<div class='card'><div class='label'>ClarQ depth</div><div class='value'>{_display_value(row.get('ClarQ_depth'))}</div></div>",
+            f"<div class='card'><div class='label'>Goodbye rate</div><div class='value'>{_display_value(row.get('Goodbye_rate'))}</div></div>",
+            f"<div class='card'><div class='label'>ARL</div><div class='value'>{_display_value(row.get('ARL'))}</div></div>",
+            f"<div class='card'><div class='label'>AQD</div><div class='value'>{_display_value(row.get('AQD'))}</div></div>",
+        ])
+        panels.append(
+            f"<section class='strength-panel{' visible' if idx == 0 else ''}' data-strength='{escape(strength_token)}'>"
+            f"<h2>Strength {escape(_display_value(strength))}</h2>"
+            f"<div class='cards'>{summary_cards}</div>"
+            "<h3>Dialogue overview</h3>"
+            "<table><thead><tr><th>Task type</th><th>Dialogue</th><th>Task</th><th>Success</th><th>Step recall</th><th>ClarQ count</th><th>Goodbye</th></tr></thead>"
+            f"<tbody>{_dialogue_summary_table(dialogues)}</tbody></table>"
+            "<h3>Dialogues</h3>"
+            f"{_dialogues_html(dialogues)}"
+            '</section>'
+        )
+
+    run_type = 'Steered' if first_row.get('strength') not in (None, '') else 'Baseline'
+    feature_title = f"Feature {escape(_display_value(first_row.get('feature_index')))}"
+    subtitle_bits = [
+        f"Sweep: {escape(sweep_name)}",
+        f"Run type: {escape(run_type)}",
+        f"Hookpoint: {escape(str(first_row.get('hookpoint') or '—'))}",
+    ]
+    if first_row.get('vocab') not in (None, ''):
+        subtitle_bits.append(f"Vocab: {escape(str(first_row.get('vocab')))}")
+    if first_row.get('module_path') not in (None, ''):
+        subtitle_bits.append(f"Module: {escape(str(first_row.get('module_path')))}")
+    if first_row.get('sae_file') not in (None, ''):
+        subtitle_bits.append(f"SAE: {escape(str(first_row.get('sae_file')))}")
+
+    return f"""<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <title>{feature_title}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; color: #1f2937; background: #f8fafc; }}
+    h1, h2, h3 {{ margin-bottom: 0.4rem; }}
+    .subtitle {{ color: #475569; margin-bottom: 18px; }}
+    .toolbar {{ display: flex; gap: 12px; align-items: center; margin: 18px 0 24px; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 24px; }}
+    .card {{ background: white; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+    .label {{ color: #64748b; font-size: 0.9rem; margin-bottom: 6px; }}
+    .value {{ font-size: 1.2rem; font-weight: 600; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 18px; }}
+    th, td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }}
+    th {{ background: #e2e8f0; }}
+    .strength-panel {{ display: none; }}
+    .strength-panel.visible {{ display: block; }}
+    .dialogue {{ background: white; border-radius: 12px; padding: 0; margin: 12px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+    .dialogue > summary {{ cursor: pointer; padding: 14px; font-weight: 600; }}
+    .dialogue-body {{ padding: 0 14px 14px; }}
+    .meta {{ color: #64748b; font-weight: 400; font-size: 0.92rem; }}
+    .dialogue-section {{ margin: 14px 0; }}
+    .section-title {{ font-weight: 600; margin-bottom: 8px; }}
+    .turn {{ border-radius: 10px; padding: 10px 12px; margin: 8px 0; }}
+    .turn.jax {{ background: #dbeafe; }}
+    .turn.seeker {{ background: #ede9fe; }}
+    .speaker {{ font-weight: 700; margin-bottom: 6px; }}
+    .link-button {{ background: none; border: none; color: #2563eb; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }}
+    .empty {{ color: #64748b; }}
+  </style>
+</head>
+<body>
+  <h1>{feature_title}</h1>
+  <div class='subtitle'>{escape(' • '.join(subtitle_bits))}</div>
+  <div class='toolbar'>
+    <label for='strength-select'><strong>Choose strength:</strong></label>
+    <select id='strength-select'>
+      {''.join(selector_options)}
+    </select>
+  </div>
+  <h2>Strength comparison</h2>
+  <table>
+    <thead>
+      <tr><th>Strength</th><th>Success rate</th><th>Step recall</th><th>ClarQ count</th><th>ClarQ rate</th><th>ClarQ depth</th><th>Goodbye rate</th><th>ARL</th><th>AQD</th></tr>
+    </thead>
+    <tbody>{''.join(overview_rows)}</tbody>
+  </table>
+  {''.join(panels)}
+  <script>
+    const select = document.getElementById('strength-select');
+    const panels = Array.from(document.querySelectorAll('.strength-panel'));
+    const buttons = Array.from(document.querySelectorAll('[data-strength-target]'));
+    function setStrength(value) {{
+      if (value === 'all') {{
+        panels.forEach(panel => panel.classList.add('visible'));
+        return;
+      }}
+      panels.forEach(panel => panel.classList.toggle('visible', panel.dataset.strength === value));
+    }}
+    select.addEventListener('change', (event) => setStrength(event.target.value));
+    buttons.forEach(button => button.addEventListener('click', () => {{
+      select.value = button.dataset.strengthTarget;
+      setStrength(button.dataset.strengthTarget);
+    }}));
+    setStrength(panels[0] ? panels[0].dataset.strength : 'all');
+    if (panels[0]) {{ select.value = panels[0].dataset.strength; }}
+  </script>
+</body>
+</html>"""
+
+
+def _write_clarq_feature_dashboards(
+    *,
+    sweep_dir: Path,
+    sweep_name: str,
+    summary_rows: list[dict[str, Any]],
+    metrics_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    feature_reports_dir = ensure_dir(sweep_dir / 'feature_reports')
+    metrics_rows_by_run: dict[str, list[dict[str, Any]]] = {}
+    for row in metrics_rows:
+        metrics_rows_by_run.setdefault(str(row.get('run_name')), []).append(row)
+
+    grouped_rows: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in summary_rows:
+        grouped_rows.setdefault(_feature_group_key(row), []).append(row)
+
+    manifest: list[dict[str, Any]] = []
+    for _, group_rows in sorted(grouped_rows.items(), key=lambda item: (str(item[0][1]), item[0][4])):
+        dashboard_filename = _feature_dashboard_filename(group_rows[0])
+        dashboard_path = feature_reports_dir / dashboard_filename
+        dashboard_html = _build_clarq_feature_dashboard_html(
+            sweep_name=sweep_name,
+            group_rows=group_rows,
+            metrics_rows_by_run=metrics_rows_by_run,
+        )
+        dashboard_path.write_text(dashboard_html, encoding='utf-8')
+        ordered_rows = sorted(group_rows, key=lambda row: _strength_sort_key(row.get('strength')))
+        manifest.append({
+            'feature_index': group_rows[0].get('feature_index'),
+            'vocab': group_rows[0].get('vocab'),
+            'hookpoint': group_rows[0].get('hookpoint'),
+            'module_path': group_rows[0].get('module_path'),
+            'sae_file': group_rows[0].get('sae_file'),
+            'strengths': ', '.join(_display_value(row.get('strength')) for row in ordered_rows),
+            'dashboard_path': str(dashboard_path),
+        })
+
+    if manifest:
+        index_rows = []
+        for row in manifest:
+            rel_path = Path(row['dashboard_path']).relative_to(sweep_dir)
+            index_rows.append(
+                '<tr>'
+                f"<td>{escape(_display_value(row.get('feature_index')))}</td>"
+                f"<td>{escape(str(row.get('hookpoint') or '—'))}</td>"
+                f"<td>{escape(str(row.get('vocab') or '—'))}</td>"
+                f"<td>{escape(str(row.get('strengths') or '—'))}</td>"
+                f"<td><a href='{escape(rel_path.as_posix())}'>{escape(Path(row['dashboard_path']).name)}</a></td>"
+                '</tr>'
+            )
+        index_html = f"""<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <title>{escape(sweep_name)} feature dashboards</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; color: #1f2937; background: #f8fafc; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+    th, td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }}
+    th {{ background: #e2e8f0; }}
+  </style>
+</head>
+<body>
+  <h1>{escape(sweep_name)} feature dashboards</h1>
+  <p>One HTML per steering feature. Each dashboard lets you switch between strengths on a single page.</p>
+  <table>
+    <thead><tr><th>Feature</th><th>Hookpoint</th><th>Vocab</th><th>Strengths</th><th>Dashboard</th></tr></thead>
+    <tbody>{''.join(index_rows)}</tbody>
+  </table>
+</body>
+</html>"""
+        (sweep_dir / 'clarq_feature_dashboards.html').write_text(index_html, encoding='utf-8')
+        write_csv(sweep_dir / 'feature_dashboards.csv', pd.DataFrame(manifest))
+
+    return manifest
+
+
 def _release_cuda_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
@@ -375,79 +763,73 @@ def _flatten_run_artifacts(
 
 
 def _flatten_clarq_run_artifacts(
-        *,
-        sweep_dir: Path,
-        run_name: str,
-        result: dict[str, Any],
-        storage: dict[str, Any],
-    ) -> dict[str, Any]:
-        if storage.get('layout', 'flat') != 'flat':
-            return {
-                'results_path': result.get('results_path'),
-                'metrics_path': result.get('metrics_path'),
-                'summary_path': result.get('summary_path'),
-                'report_path': result.get('report_path'),
-            }
-
-        results_dir = ensure_dir(sweep_dir / 'results')
-        metrics_dir = ensure_dir(sweep_dir / 'metrics')
-        summaries_dir = ensure_dir(sweep_dir / 'summaries')
-        reports_dir = ensure_dir(sweep_dir / 'reports')
-
-        kept_paths = {
-            'results_path': None,
-            'metrics_path': None,
-            'summary_path': None,
-            'report_path': None,
+    *,
+    sweep_dir: Path,
+    run_name: str,
+    result: dict[str, Any],
+    storage: dict[str, Any],
+) -> dict[str, Any]:
+    if storage.get('layout', 'flat') != 'flat':
+        return {
+            'results_path': result.get('results_path'),
+            'metrics_path': result.get('metrics_path'),
+            'summary_path': result.get('summary_path'),
+            'report_path': result.get('report_path'),
         }
 
-        results_path = result.get('results_path')
-        metrics_path = result.get('metrics_path')
-        summary_path = result.get('summary_path')
-        report_path = result.get('report_path')
+    results_dir = ensure_dir(sweep_dir / 'results')
+    metrics_dir = ensure_dir(sweep_dir / 'metrics')
+    summaries_dir = ensure_dir(sweep_dir / 'summaries')
+    reports_dir = ensure_dir(sweep_dir / 'reports')
 
-        if storage.get('keep_results', True):
-            kept_paths['results_path'] = _replace_file(
-                results_path,
-                results_dir / f'{run_name}__clarq_results.json',
-            )
-        else:
-            _safe_unlink(results_path)
+    kept_paths = {
+        'results_path': None,
+        'metrics_path': None,
+        'summary_path': None,
+        'report_path': None,
+    }
 
-        keep_clarq_metrics = storage.get('keep_clarq_metrics')
-        if keep_clarq_metrics is None:
-            keep_clarq_metrics = storage.get('keep_example_metrics', True)
+    results_path = result.get('results_path')
+    metrics_path = result.get('metrics_path')
+    summary_path = result.get('summary_path')
+    report_path = result.get('report_path')
 
-        if keep_clarq_metrics:
-            kept_paths['metrics_path'] = _replace_file(
-                metrics_path,
-                metrics_dir / f'{run_name}__clarq_metrics.csv',
-            )
-        else:
-            _safe_unlink(metrics_path)
+    if storage.get('keep_results', True):
+        kept_paths['results_path'] = _replace_file(
+            results_path,
+            results_dir / f'{run_name}__clarq_results.json',
+        )
+    else:
+        _safe_unlink(results_path)
 
-        if storage.get('keep_aggregate_metrics', True):
-            kept_paths['summary_path'] = _replace_file(
-                summary_path,
-                summaries_dir / f'{run_name}__clarq_summary.csv',
-            )
-        else:
-            _safe_unlink(summary_path)
+    if storage.get('keep_clarq_metrics', True):
+        kept_paths['metrics_path'] = _replace_file(
+            metrics_path,
+            metrics_dir / f'{run_name}__clarq_metrics.csv',
+        )
+    else:
+        _safe_unlink(metrics_path)
 
-        if storage.get('keep_results', True):
-            kept_paths['report_path'] = _replace_file(
-                report_path,
-                reports_dir / f'{run_name}__clarq_report.html',
-            )
-        else:
-            _safe_unlink(report_path)
+    if storage.get('keep_clarq_summary', True):
+        kept_paths['summary_path'] = _replace_file(
+            summary_path,
+            summaries_dir / f'{run_name}__clarq_summary.csv',
+        )
+    else:
+        _safe_unlink(summary_path)
 
-        if storage.get('cleanup_tmp_run_dirs', True):
-            if results_path is not None:
-                run_dir = Path(results_path).parent
-                _safe_rmtree(run_dir)
+    if storage.get('keep_clarq_report', True):
+        kept_paths['report_path'] = _replace_file(
+            report_path,
+            reports_dir / f'{run_name}__clarq_report.html',
+        )
+    else:
+        _safe_unlink(report_path)
 
-        return kept_paths
+    if storage.get('cleanup_tmp_run_dirs', True) and results_path is not None:
+        _safe_rmtree(Path(results_path).parent)
+
+    return kept_paths
 
 
 def _merge_metadata(row: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
@@ -778,7 +1160,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     _release_cuda_memory()
 
                 summary_metrics = _load_single_row_csv(result.get('summary_path'))
-                run_metrics = _load_single_row_csv(result.get('metrics_path'))
+                run_metrics_df = _load_multi_row_csv(result.get('metrics_path'))
 
                 flattened_paths = _flatten_clarq_run_artifacts(
                     sweep_dir=sweep_dir,
@@ -805,8 +1187,9 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
 
                 if summary_metrics:
                     summary_rows.append(_merge_metadata(manifest_row, summary_metrics))
-                if run_metrics:
-                    metrics_rows.append(_merge_metadata(manifest_row, run_metrics))
+                if not run_metrics_df.empty:
+                    for _, metric_row in run_metrics_df.iterrows():
+                        metrics_rows.append(_merge_metadata(manifest_row, metric_row.to_dict()))
 
     manifest_df = pd.DataFrame(manifest_rows, columns=CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS)
     manifest_jsonl = sweep_dir / 'manifest.jsonl'
@@ -815,9 +1198,23 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
     write_csv(manifest_csv, manifest_df)
 
     if summary_rows:
-        write_csv(sweep_dir / 'clarq_summary.csv', pd.DataFrame(summary_rows))
+        summary_df = pd.DataFrame(summary_rows)
+        available_summary_cols = [c for c in CLARQ_COMPACT_SUMMARY_COLUMNS if c in summary_df.columns]
+        if available_summary_cols:
+            summary_df = summary_df.loc[:, available_summary_cols]
+        write_csv(sweep_dir / 'clarq_summary.csv', summary_df)
     if metrics_rows:
-        write_csv(sweep_dir / 'clarq_metrics.csv', pd.DataFrame(metrics_rows))
+        metrics_df = pd.DataFrame(metrics_rows)
+        write_csv(sweep_dir / 'clarq_metrics.csv', metrics_df)
+
+    feature_dashboard_manifest: list[dict[str, Any]] = []
+    if storage.get('keep_clarq_feature_dashboards', True) and summary_rows:
+        feature_dashboard_manifest = _write_clarq_feature_dashboards(
+            sweep_dir=sweep_dir,
+            sweep_name=sweep_name,
+            summary_rows=summary_rows,
+            metrics_rows=metrics_rows,
+        )
 
     if storage.get('cleanup_tmp_run_dirs', True):
         _safe_rmtree(tmp_root)
@@ -828,9 +1225,11 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
         print(f'  summary: {sweep_dir / "clarq_summary.csv"}')
     if metrics_rows:
         print(f'  metrics: {sweep_dir / "clarq_metrics.csv"}')
+    if feature_dashboard_manifest:
+        print(f'  feature dashboards: {sweep_dir / "clarq_feature_dashboards.html"}')
     reports_dir = sweep_dir / 'reports'
-    if reports_dir.exists():
-        print(f'  reports: {reports_dir}')
+    if reports_dir.exists() and any(reports_dir.glob('*.html')):
+        print(f'  per-run reports: {reports_dir}')
 
 
 if __name__ == '__main__':

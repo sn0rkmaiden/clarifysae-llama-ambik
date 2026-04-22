@@ -169,9 +169,14 @@ python -m clarifysae_llama.runners.run_clarq_eval --config configs/clarq/steer_c
 ```
 
 Example sweep run:
-
+* one feature
 ```bash
 python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_feature_strengths_clarq.yaml
+```
+
+* many features
+```bash
+python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_feature_strengths_clarq_many.yaml
 ```
 
 Notes:
