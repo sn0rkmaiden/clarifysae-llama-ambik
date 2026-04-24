@@ -11,6 +11,10 @@ import pandas as pd
 import torch
 from matplotlib import patches
 
+"""
+python visualization/visualize_clarifyscore.py --config visualization/clarifyscore_8b_layer19_C.yaml
+"""
+
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.discovery.sae_utils import encode_dense
 from clarifysae_llama.discovery.vocab import load_vocab_groups

@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 
+"""
+python visualization/visualize_outputscore.py --config visualization/outputscore_8b_layer19_C.yaml
+"""
+
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.discovery.output_scores import SingleFeatureIntervention
 from clarifysae_llama.utils.io import ensure_dir, write_csv, write_json

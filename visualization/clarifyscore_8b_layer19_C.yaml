@@ -14,7 +14,7 @@ clarify_visualization:
   vocab_path: data/vocabs/clarifying_vocab.json
   feature_source:
     mode: from_csv
-    path: data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/C/feature_scores.csv
+    path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/C/feature_scores.csv
     score_column: score
     top_n: 3
   text_source:
