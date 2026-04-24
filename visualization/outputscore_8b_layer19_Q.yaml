@@ -13,7 +13,7 @@ output_visualization:
   module_path: model.layers.19
   feature_source:
     mode: from_csv
-    path: /visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/output_scores/Q_topk50/output_scores.csv
+    path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/output_scores/Q_topk50/output_scores.csv
     score_column: output_score
     top_n: 3
   prompt_source:

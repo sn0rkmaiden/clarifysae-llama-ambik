@@ -14,11 +14,11 @@ clarify_visualization:
   vocab_path: data/vocabs/question_vocab.json
   feature_source:
     mode: from_csv
-    path: data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/Q/feature_scores.csv
+    path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/Q/feature_scores.csv
     score_column: score
     top_n: 3
   text_source:
-    path: data/cds2_8b_1b_new_experiments/predictions/base_llama31_8b_instruct_900/predictions.jsonl
+    path: visualization/data/cds2_8b_1b_new_experiments/predictions/base_llama31_8b_instruct_900/predictions.jsonl
     fields: [gold_question, ambiguous_instruction]
     max_per_field: 5
   scoring:
