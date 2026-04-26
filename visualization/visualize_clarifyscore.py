@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,13 +12,8 @@ import pandas as pd
 import torch
 from matplotlib import patches
 
-"""
-python visualization/visualize_clarifyscore.py --config visualization/clarifyscore_8b_layer19_C.yaml
-"""
-
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.discovery.sae_utils import encode_dense
-from clarifysae_llama.discovery.vocab import load_vocab_groups
 from clarifysae_llama.utils.io import ensure_dir, write_json, write_csv
 from clarifysae_llama.utils.seed import set_seed
 
@@ -38,6 +34,12 @@ class TextExample:
     example_id: str
     field: str
     text: str
+
+
+@dataclass
+class VocabPhrase:
+    text: str
+    regex: re.Pattern[str]
 
 
 def _clean_token_label(tokenizer, token_id: int) -> str:
@@ -131,27 +133,96 @@ def _load_prediction_examples(text_cfg: dict[str, Any]) -> list[TextExample]:
     return examples
 
 
-def _match_vocab_positions(
-    token_ids_1d: torch.Tensor,
-    token_groups: list[list[torch.Tensor]],
+def _iter_vocab_strings(payload: Any) -> list[str]:
+    phrases: list[str] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, str):
+                phrases.append(item)
+    elif isinstance(payload, dict):
+        for _, values in payload.items():
+            if isinstance(values, str):
+                phrases.append(values)
+            elif isinstance(values, list):
+                phrases.extend(str(item) for item in values if isinstance(item, str))
+    else:
+        raise ValueError("Vocabulary file must contain either a JSON list or a JSON dictionary.")
+    return phrases
+
+
+def _compile_vocab_phrases(path: str | Path) -> list[VocabPhrase]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw_phrases = _iter_vocab_strings(payload)
+    compiled: list[VocabPhrase] = []
+    seen: set[str] = set()
+    for phrase in raw_phrases:
+        normalized = phrase.lstrip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        # Match complete words/phrases in the raw text, case-insensitively.
+        # This is more robust than token-id exact matching for Llama tokenizers,
+        # where beginning-of-string and after-space pieces can differ.
+        pattern = re.compile(rf"(?<!\w){re.escape(normalized)}(?!\w)", flags=re.IGNORECASE)
+        compiled.append(VocabPhrase(text=normalized, regex=pattern))
+    if not compiled:
+        raise ValueError(f"No non-empty vocabulary strings were loaded from {path}")
+    return compiled
+
+
+def _match_vocab_positions_from_offsets(
+    text: str,
+    offsets: list[tuple[int, int]],
+    vocab_phrases: list[VocabPhrase],
     *,
     expand_range: tuple[int, int] = (0, 0),
-) -> torch.Tensor:
-    seq_len = int(token_ids_1d.numel())
+) -> tuple[torch.Tensor, list[str]]:
+    seq_len = len(offsets)
     mask = torch.zeros(seq_len, dtype=torch.bool)
-    for group in token_groups:
-        for ids_of_interest in group:
-            ids = ids_of_interest.to(device=token_ids_1d.device)
-            ids_len = int(ids.numel())
-            if ids_len == 0 or ids_len > seq_len:
+    matched_phrases: list[str] = []
+
+    char_spans: list[tuple[int, int, str]] = []
+    for phrase in vocab_phrases:
+        for match in phrase.regex.finditer(text):
+            start, end = match.span()
+            if end > start:
+                char_spans.append((start, end, phrase.text))
+
+    if not char_spans:
+        return mask, matched_phrases
+
+    left, right = int(expand_range[0]), int(expand_range[1])
+    for span_start, span_end, phrase_text in char_spans:
+        any_hit = False
+        token_positions: list[int] = []
+        for idx, (tok_start, tok_end) in enumerate(offsets):
+            if tok_end <= tok_start:
                 continue
-            for start in range(0, seq_len - ids_len + 1):
-                if torch.equal(token_ids_1d[start : start + ids_len], ids):
-                    left, right = expand_range
-                    span_start = max(0, start - int(left))
-                    span_end = min(seq_len, start + ids_len + int(right))
-                    mask[span_start:span_end] = True
-    return mask
+            overlaps = not (tok_end <= span_start or tok_start >= span_end)
+            if overlaps:
+                token_positions.append(idx)
+                any_hit = True
+        if not any_hit:
+            continue
+        matched_phrases.append(phrase_text)
+        start_idx = max(0, min(token_positions) - left)
+        end_idx = min(seq_len, max(token_positions) + 1 + right)
+        mask[start_idx:end_idx] = True
+    return mask, matched_phrases
+
+
+def _resolve_heatmap_vmax(activations: torch.Tensor, clip_percentile: float) -> float:
+    values = activations.detach().cpu().float()
+    if values.numel() == 0:
+        return 1.0
+    max_value = float(values.max().item())
+    if max_value <= 0:
+        return 1.0
+    clip_percentile = float(clip_percentile)
+    if 0.0 < clip_percentile < 100.0:
+        vmax = float(torch.quantile(values, clip_percentile / 100.0).item())
+        return max(vmax, min(max_value, 1e-6))
+    return max_value
 
 
 def _plot_heatmap(
@@ -160,11 +231,15 @@ def _plot_heatmap(
     activations: torch.Tensor,
     title: str,
     marker_mask: torch.Tensor | None = None,
+    *,
+    clip_percentile: float = 95.0,
 ) -> None:
-    values = activations.detach().cpu().float().unsqueeze(0).numpy()
+    values = activations.detach().cpu().float()
+    vmax = _resolve_heatmap_vmax(values, clip_percentile)
+    matrix = values.unsqueeze(0).numpy()
     width = max(10, min(0.45 * len(token_labels), 24))
     fig, ax = plt.subplots(figsize=(width, 2.8))
-    im = ax.imshow(values, aspect="auto", interpolation="nearest")
+    im = ax.imshow(matrix, aspect="auto", interpolation="nearest", vmin=0.0, vmax=vmax)
     ax.set_title(title)
     ax.set_yticks([0])
     ax.set_yticklabels(["активация"])
@@ -214,7 +289,7 @@ def _plot_marker_background_boxplot(
         return
 
     fig, ax = plt.subplots(figsize=(max(8, 1.7 * len(series)), 4.5))
-    ax.boxplot(series, labels=labels, showfliers=False)
+    ax.boxplot(series, tick_labels=labels, showfliers=False)
     ax.set_title(f"Признак {feature_idx}: активации на целевых и фоновых позициях")
     ax.set_ylabel("активация")
     ax.grid(axis="y", alpha=0.3)
@@ -250,7 +325,6 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
         module_path=viz_cfg.get("module_path"),
     )
     sae_device = _get_module_device(extractor.target_module)
-    # Re-load SAE onto the actual module device if no explicit override was given.
     if not viz_cfg.get("sae_device"):
         sae = _load_sae(
             discovery_cfg={
@@ -267,21 +341,43 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
 
     scoring_cfg = viz_cfg.get("scoring", {})
     expand_range = tuple(scoring_cfg.get("expand_range", [0, 0]))
-    token_groups = load_vocab_groups(viz_cfg["vocab_path"], tokenizer)
+    if len(expand_range) != 2:
+        raise ValueError("clarify_visualization.scoring.expand_range must contain exactly two integers.")
+    vocab_phrases = _compile_vocab_phrases(viz_cfg["vocab_path"])
     ignore_token_ids = set()
     if scoring_cfg.get("ignore_special_tokens", True):
         ignore_token_ids.update(tokenizer.all_special_ids)
     ignore_token_ids.update(int(x) for x in scoring_cfg.get("ignore_token_ids", []))
+    clip_percentile = float(scoring_cfg.get("heatmap_clip_percentile", 95.0))
 
     records: list[dict[str, Any]] = []
 
     with extractor:
         for example_idx, example in enumerate(examples):
-            encoded = tokenizer(example.text, return_tensors="pt", add_special_tokens=False)
-            input_ids = encoded["input_ids"].to(model_input_device)
-            attention_mask = encoded.get("attention_mask")
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(model_input_device)
+            encoded = tokenizer(
+                example.text,
+                add_special_tokens=False,
+                return_offsets_mapping=True,
+                return_attention_mask=True,
+            )
+            token_ids_list = list(encoded["input_ids"])
+            if not token_ids_list:
+                continue
+            if "offset_mapping" not in encoded:
+                raise ValueError(
+                    "Tokenizer did not return offset_mapping. "
+                    "This visualization requires a fast tokenizer with offset mappings enabled."
+                )
+            offsets = [(int(start), int(end)) for start, end in encoded["offset_mapping"]]
+            if len(offsets) != len(token_ids_list):
+                raise ValueError(
+                    f"offset_mapping length ({len(offsets)}) does not match tokenized length ({len(token_ids_list)})."
+                )
+
+            input_ids = torch.tensor([token_ids_list], dtype=torch.long, device=model_input_device)
+            attention_mask = None
+            if encoded.get("attention_mask") is not None:
+                attention_mask = torch.tensor([encoded["attention_mask"]], dtype=torch.long, device=model_input_device)
 
             model_inputs = {"input_ids": input_ids, "use_cache": False}
             if attention_mask is not None:
@@ -293,9 +389,14 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
                 hidden = hidden.to(device=sae_device, dtype=dtype)
                 latents = encode_dense(sae, hidden)
 
-            token_ids = encoded["input_ids"][0].cpu()
+            token_ids = torch.tensor(token_ids_list, dtype=torch.long)
             token_labels = [_clean_token_label(tokenizer, int(token_id)) for token_id in token_ids.tolist()]
-            marker_mask = _match_vocab_positions(token_ids, token_groups, expand_range=(int(expand_range[0]), int(expand_range[1])))
+            marker_mask, matched_phrases = _match_vocab_positions_from_offsets(
+                example.text,
+                offsets,
+                vocab_phrases,
+                expand_range=(int(expand_range[0]), int(expand_range[1])),
+            )
             if ignore_token_ids:
                 ignore_mask = torch.tensor([int(tok) in ignore_token_ids for tok in token_ids.tolist()], dtype=torch.bool)
                 marker_mask &= ~ignore_mask
@@ -312,6 +413,7 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
                     activations=acts,
                     title=f"Признак {feature_idx} — {example.field}",
                     marker_mask=marker_mask,
+                    clip_percentile=clip_percentile,
                 )
 
                 marker_values = acts[marker_mask].tolist()
@@ -322,6 +424,7 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
                         "example_id": example.example_id,
                         "field": example.field,
                         "text": example.text,
+                        "matched_phrases": matched_phrases,
                         "n_tokens": int(token_ids.numel()),
                         "n_marker_tokens": int(marker_mask.sum().item()),
                         "n_background_tokens": int(background_mask.sum().item()),
