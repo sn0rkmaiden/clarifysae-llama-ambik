@@ -283,15 +283,21 @@ def _plot_topk_before_after(
         )
     plot_df = pd.DataFrame(rows).sort_values("after", ascending=False).head(max(top_k, len(before)))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.45 * len(plot_df))))
-    before_sorted = plot_df.sort_values("before", ascending=True)
-    after_sorted = plot_df.sort_values("after", ascending=True)
-    axes[0].barh(before_sorted["token"], before_sorted["before"])
+    # Use the same token order and the same x-axis limits on both panels.
+    # Otherwise before/after changes can be visually exaggerated or hidden.
+    plot_sorted = plot_df.sort_values("after", ascending=True)
+    xmax = max(float(plot_sorted["before"].max()), float(plot_sorted["after"].max()))
+    xmax = max(xmax * 1.05, 1e-8)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.45 * len(plot_sorted))))
+    axes[0].barh(plot_sorted["token"], plot_sorted["before"])
     axes[0].set_title("До воздействия")
     axes[0].set_xlabel("вероятность")
-    axes[1].barh(after_sorted["token"], after_sorted["after"])
+    axes[0].set_xlim(0.0, xmax)
+    axes[1].barh(plot_sorted["token"], plot_sorted["after"])
     axes[1].set_title("После воздействия")
     axes[1].set_xlabel("вероятность")
+    axes[1].set_xlim(0.0, xmax)
     fig.suptitle(f"Признак {feature_idx}: распределение вероятностей следующего токена")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -359,7 +365,7 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
 
     plots_cfg = viz_cfg.get("plots", {})
     top_k = int(plots_cfg.get("top_k_tokens", 10))
-    selected_token_mode = str(plots_cfg.get("selected_token_mode", "max_delta")).strip().lower()
+    selected_token_mode = str(plots_cfg.get("selected_token_mode", "saved_best")).strip().lower()
 
     summary_rows: list[dict[str, Any]] = []
 
@@ -403,9 +409,11 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
 
         if selected_token_mode == "saved_best" and run.best_token_id is not None:
             selected_token_id = int(run.best_token_id)
+            selection_mode_used = "saved_best"
         else:
             delta = probs_after - probs_before
             selected_token_id = int(torch.argmax(delta).item())
+            selection_mode_used = "max_delta"
 
         token_stats = _plot_selected_token_delta(
             output_dir / f"feature_{run.feature_idx}__run_{run_idx}__selected_token_delta.png",
@@ -426,6 +434,10 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
                 "feature_idx": int(run.feature_idx),
                 "prompt": run.prompt,
                 "saved_output_score": run.saved_output_score,
+                "selected_token_mode_requested": selected_token_mode,
+                "selected_token_mode_used": selection_mode_used,
+                "saved_best_token_id": run.best_token_id,
+                "saved_best_token": run.best_token,
                 "used_steering_delta": context.last_delta,
                 "used_local_max_act": context.last_local_max_act,
                 **token_stats,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -184,13 +185,92 @@ def _infer_text_source_mode(text_cfg: dict[str, Any]) -> str:
 
 def _display_field_name(field: str) -> str:
     mapping = {
-        "discovery_marker": "фрагмент датасета с найденным словарным маркером",
-        "discovery_background": "фрагмент датасета без словарных маркеров",
-        "gold_question": "эталонный уточняющий вопрос",
+        "discovery_marker": "фрагмент с маркером",
+        "discovery_background": "фоновый фрагмент",
+        "gold_question": "эталонный вопрос",
         "ambiguous_instruction": "неоднозначная инструкция",
         "model_questions": "вопрос модели",
     }
     return mapping.get(str(field), str(field))
+
+
+def _compile_regexes(patterns: list[str]) -> list[re.Pattern[str]]:
+    compiled: list[re.Pattern[str]] = []
+    for pattern in patterns:
+        if not str(pattern).strip():
+            continue
+        compiled.append(re.compile(str(pattern), flags=re.IGNORECASE | re.UNICODE))
+    return compiled
+
+
+def _passes_clean_text_filters(text: str, text_cfg: dict[str, Any]) -> bool:
+    cleaning_cfg = text_cfg.get("cleaning", {}) or {}
+    if not bool(cleaning_cfg.get("enabled", False)):
+        return True
+
+    stripped = text.strip()
+    min_chars = int(cleaning_cfg.get("min_chars", 20))
+    max_chars = int(cleaning_cfg.get("max_chars", 3000))
+    if len(stripped) < min_chars or len(stripped) > max_chars:
+        return False
+
+    require_patterns = [str(x) for x in cleaning_cfg.get("require_patterns", [])]
+    if require_patterns and not any(pattern.search(stripped) for pattern in _compile_regexes(require_patterns)):
+        return False
+
+    reject_patterns = [str(x) for x in cleaning_cfg.get("reject_patterns", [])]
+    if any(pattern.search(stripped) for pattern in _compile_regexes(reject_patterns)):
+        return False
+
+    return True
+
+
+def _normalize_example_id_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, int)):
+        item = str(value).strip()
+        return [item] if item else []
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _normalize_selected_examples(value: Any) -> dict[int, set[str]]:
+    """Normalize plotting.selected_examples from YAML.
+
+    Expected YAML shape:
+      selected_examples:
+        63916: ["123", "456"]
+
+    Keys are feature ids; values are example_id values copied from
+    clarify_example_candidates_for_review.csv.
+    """
+    if not isinstance(value, dict):
+        return {}
+
+    selected: dict[int, set[str]] = {}
+    for raw_feature_idx, raw_ids in value.items():
+        try:
+            feature_idx = int(raw_feature_idx)
+        except (TypeError, ValueError):
+            continue
+        ids = set(_normalize_example_id_list(raw_ids))
+        if ids:
+            selected[feature_idx] = ids
+    return selected
+
+
+def _selected_ids_for_loading(selected_by_feature: dict[int, set[str]]) -> list[str]:
+    ids: set[str] = set()
+    for per_feature_ids in selected_by_feature.values():
+        ids.update(per_feature_ids)
+    return sorted(ids)
 
 
 def _load_prediction_examples(text_cfg: dict[str, Any]) -> list[TextExample]:
@@ -249,8 +329,20 @@ def _load_discovery_examples(
     token_column = str(text_cfg.get("token_column", "tokens"))
     text_column = str(text_cfg.get("text_column", "text"))
     max_rows = text_cfg.get("max_rows")
-    max_marker_examples = int(text_cfg.get("max_marker_examples", text_cfg.get("max_per_field", 5)))
-    max_background_examples = int(text_cfg.get("max_background_examples", 0))
+    max_marker_examples = int(
+        text_cfg.get(
+            "max_marker_candidate_examples",
+            text_cfg.get("max_marker_examples", text_cfg.get("max_per_field", 5)),
+        )
+    )
+    max_background_examples = int(
+        text_cfg.get(
+            "max_background_candidate_examples",
+            text_cfg.get("max_background_examples", 0),
+        )
+    )
+    selected_example_ids = set(_normalize_example_id_list(text_cfg.get("selected_example_ids")))
+    use_selected_examples = bool(selected_example_ids)
 
     df = pd.read_parquet(path)
     if token_column not in df.columns:
@@ -284,11 +376,16 @@ def _load_discovery_examples(
             expand_range=expand_range,
         )
         has_marker = bool(marker_mask.any().item())
+        example_id = str(row.get("id", row.get("conversation_id", row_idx)))
 
-        if not has_marker and len(background_examples) >= max_background_examples:
-            continue
-        if has_marker and len(marker_examples) >= max_marker_examples:
-            continue
+        if use_selected_examples:
+            if example_id not in selected_example_ids:
+                continue
+        else:
+            if not has_marker and len(background_examples) >= max_background_examples:
+                continue
+            if has_marker and len(marker_examples) >= max_marker_examples:
+                continue
 
         text_value = row.get(text_column) if text_column in row else None
         if isinstance(text_value, str) and text_value.strip():
@@ -296,8 +393,11 @@ def _load_discovery_examples(
         else:
             text = _decode_token_ids(tokenizer, token_ids)
 
+        if not _passes_clean_text_filters(text, text_cfg):
+            continue
+
         example = TextExample(
-            example_id=str(row.get("id", row.get("conversation_id", row_idx))),
+            example_id=example_id,
             field="discovery_marker" if has_marker else "discovery_background",
             text=text,
             token_ids=token_ids,
@@ -308,10 +408,23 @@ def _load_discovery_examples(
         else:
             background_examples.append(example)
 
-        if len(marker_examples) >= max_marker_examples and len(background_examples) >= max_background_examples:
+        if use_selected_examples:
+            loaded_ids = {example.example_id for example in marker_examples + background_examples}
+            if selected_example_ids.issubset(loaded_ids):
+                break
+        elif len(marker_examples) >= max_marker_examples and len(background_examples) >= max_background_examples:
             break
 
     examples = marker_examples + background_examples
+    if use_selected_examples:
+        loaded_ids = {example.example_id for example in examples}
+        missing_ids = sorted(selected_example_ids - loaded_ids)
+        if missing_ids:
+            print(
+                "Warning: selected example_id values were not found or did not pass filters: "
+                + ", ".join(missing_ids[:20])
+                + (" ..." if len(missing_ids) > 20 else "")
+            )
     if not examples:
         preview = repr(first_nonempty_token_value)
         if preview and len(preview) > 240:
@@ -352,11 +465,11 @@ def _iter_vocab_strings(payload: Any) -> list[str]:
             if isinstance(item, str):
                 phrases.append(item)
     elif isinstance(payload, dict):
-        for _, values in payload.items():
-            if isinstance(values, str):
-                phrases.append(values)
-            elif isinstance(values, list):
-                phrases.extend(str(item) for item in values if isinstance(item, str))
+        # For grouped vocabularies, display the semantic group name rather than
+        # flattening all variants. load_vocab_groups(...) preserves the same
+        # key order, so these names align with the returned token groups.
+        for key in payload.keys():
+            phrases.append(str(key))
     else:
         raise ValueError("Vocabulary file must contain either a JSON list or a JSON dictionary.")
     return phrases
@@ -432,10 +545,18 @@ def _resolve_heatmap_vmax(values: torch.Tensor, clip_percentile: float = 95.0) -
     max_value = float(values.max().item())
     if max_value <= 0.0:
         return 1.0
+
+    # SAE activations are very sparse. Quantiling over all values often returns
+    # zero, which makes the colorbar display ~1e-6 and saturates every non-zero
+    # activation. Quantile only over positive activations instead.
+    positive_values = values[values > 0]
+    if positive_values.numel() == 0:
+        return 1.0
+
     clip_percentile = float(clip_percentile)
     if 0.0 < clip_percentile < 100.0:
-        vmax = float(torch.quantile(values, clip_percentile / 100.0).item())
-        return max(vmax, min(max_value, 1e-6))
+        vmax = float(torch.quantile(positive_values, clip_percentile / 100.0).item())
+        return max(vmax, 1e-6)
     return max_value
 
 
@@ -519,34 +640,41 @@ def _plot_marker_background_boxplot(
     rows: list[dict[str, Any]],
     feature_idx: int,
 ) -> None:
+    """Slide-friendly mean plot of marker/background activations."""
     if not rows:
         return
 
-    grouped: dict[str, dict[str, list[float]]] = {}
+    marker_values: list[float] = []
+    local_background_values: list[float] = []
+    pure_background_values: list[float] = []
+
     for row in rows:
-        field = str(row["field"])
-        grouped.setdefault(field, {"marker": [], "background": []})
-        grouped[field]["marker"].extend(row["marker_values"])
-        grouped[field]["background"].extend(row["background_values"])
+        n_marker = int(row.get("n_marker_tokens") or 0)
+        if n_marker > 0:
+            marker_values.extend(float(x) for x in row.get("marker_values", []))
+            local_background_values.extend(float(x) for x in row.get("background_values", []))
+        else:
+            pure_background_values.extend(float(x) for x in row.get("background_values", []))
 
-    labels: list[str] = []
-    series: list[list[float]] = []
-    for field, values in grouped.items():
-        if values["marker"]:
-            labels.append(f"{_display_field_name(field)}\nмаркеры")
-            series.append(values["marker"])
-        if values["background"]:
-            labels.append(f"{_display_field_name(field)}\nфон")
-            series.append(values["background"])
-
-    if not series:
+    categories: list[tuple[str, list[float]]] = [
+        ("маркеры", marker_values),
+        ("локальный фон", local_background_values),
+        ("фон без маркера", pure_background_values),
+    ]
+    categories = [(label, values) for label, values in categories if values]
+    if not categories:
         return
 
-    fig, ax = plt.subplots(figsize=(max(8, 1.7 * len(series)), 4.5))
-    ax.boxplot(series, tick_labels=labels, showfliers=False)
-    ax.set_title(f"Feature {feature_idx}: activations on marker vs background positions")
-    ax.set_ylabel("активация")
+    labels = [label for label, _ in categories]
+    means = [float(torch.tensor(values).float().mean().item()) for _, values in categories]
+
+    fig, ax = plt.subplots(figsize=(max(6.5, 1.8 * len(labels)), 4.2))
+    ax.bar(labels, means)
+    ax.set_title(f"Признак {feature_idx}: активация на маркерах и фоне")
+    ax.set_ylabel("средняя активация")
     ax.grid(axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", labelrotation=0)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -575,7 +703,14 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
     expand_range = tuple(scoring_cfg.get("expand_range", [0, 0]))
     vocab_entries = _load_vocab_entries(viz_cfg["vocab_path"], tokenizer)
     feature_ids = _select_features(viz_cfg["feature_source"])
-    examples = _load_text_examples(viz_cfg["text_source"], tokenizer, vocab_entries, expand_range=expand_range)
+
+    selected_examples_by_feature = _normalize_selected_examples(plotting_cfg.get("selected_examples"))
+    text_source_cfg = dict(viz_cfg["text_source"])
+    selected_ids_from_plotting = _selected_ids_for_loading(selected_examples_by_feature)
+    if selected_ids_from_plotting:
+        explicit_ids = set(_normalize_example_id_list(text_source_cfg.get("selected_example_ids")))
+        text_source_cfg["selected_example_ids"] = sorted(explicit_ids | set(selected_ids_from_plotting))
+    examples = _load_text_examples(text_source_cfg, tokenizer, vocab_entries, expand_range=expand_range)
 
     sae = _load_sae(
         discovery_cfg={
@@ -706,6 +841,33 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
     summary_csv = summary_df.drop(columns=["marker_values", "background_values"], errors="ignore")
     write_csv(output_dir / "clarify_activation_summary.csv", summary_csv)
 
+    review_rows: list[dict[str, Any]] = []
+    for feature_idx in feature_ids:
+        ranked_for_review = sorted(
+            [row for row in plot_candidates if int(row["feature_idx"]) == int(feature_idx)],
+            key=lambda row: float(row["quality"]),
+            reverse=True,
+        )
+        for candidate_rank, row in enumerate(ranked_for_review):
+            text = str(row.get("text", ""))
+            review_rows.append(
+                {
+                    "feature_idx": int(feature_idx),
+                    "candidate_rank": int(candidate_rank),
+                    "quality": float(row["quality"]),
+                    "example_id": row.get("example_id"),
+                    "field": row.get("field"),
+                    "matched_phrases": row.get("matched_phrases"),
+                    "mean_marker_activation": row.get("mean_marker_activation"),
+                    "mean_background_activation": row.get("mean_background_activation"),
+                    "n_tokens": row.get("n_tokens"),
+                    "n_marker_tokens": row.get("n_marker_tokens"),
+                    "text_preview": text[:800],
+                }
+            )
+    if review_rows:
+        write_csv(output_dir / "clarify_example_candidates_for_review.csv", pd.DataFrame(review_rows))
+
     for feature_idx in feature_ids:
         feature_rows = [row for row in records if int(row["feature_idx"]) == int(feature_idx)]
         _plot_marker_background_boxplot(
@@ -719,6 +881,9 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
             key=lambda row: float(row["quality"]),
             reverse=True,
         )
+        selected_ids_for_feature = selected_examples_by_feature.get(int(feature_idx))
+        if selected_ids_for_feature:
+            ranked = [row for row in ranked if str(row.get("example_id")) in selected_ids_for_feature]
         for plot_rank, row in enumerate(ranked[:max_examples_per_feature]):
             heatmap_name = f"feature_{feature_idx}__{row['field']}__best_{plot_rank}.png"
             _plot_heatmap(

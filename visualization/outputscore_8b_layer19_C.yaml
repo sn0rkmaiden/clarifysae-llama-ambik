@@ -24,5 +24,5 @@ output_visualization:
     amp_columns: [amp_factor, output_amp_factor]
   plots:
     top_k_tokens: 10
-    selected_token_mode: max_delta
+    selected_token_mode: saved_best
   output_dir: visualization/results/outputscore_8b_layer19_C

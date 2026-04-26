@@ -27,8 +27,19 @@ clarify_visualization:
     token_column: tokens
     text_column: text
     max_rows: 4096
-    max_marker_examples: 5
-    max_background_examples: 2
+    # Collect a larger candidate pool, then rank examples after activations are computed.
+    # This gives cleaner slide examples than taking the first few matching rows.
+    max_marker_candidate_examples: 200
+    max_background_candidate_examples: 30
+    cleaning:
+      enabled: true
+      min_chars: 20
+      max_chars: 3000
+      reject_patterns:
+        - "(?i)\\b(sex|sexual|porn|nude|naked|xxx|fetish|erotic)\\b"
+        - "(?i)\\b(fuck|shit|bitch|dick|pussy|cock)\\b"
+        - "(?i)\\b(kill|murder|suicide|self-harm|rape|incest)\\b"
+        - "<\\|reserved_special_token"
 
   scoring:
     expand_range: [0, 0]
@@ -42,5 +53,11 @@ clarify_visualization:
     crop_window_right: 12
     max_examples_per_feature: 3
     rank_examples_by: marker_minus_background
+    # After inspecting clarify_example_candidates_for_review.csv, you can
+    # lock exact slide examples here. Use example_id values from the CSV.
+    # Example:
+    # selected_examples:
+    #   63916: ["123", "456"]
+    #   89264: ["789"]
 
   output_dir: visualization/results/clarifyscore_8b_layer19_Q
