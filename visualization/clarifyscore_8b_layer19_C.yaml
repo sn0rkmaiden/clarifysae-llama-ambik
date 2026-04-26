@@ -51,7 +51,7 @@ clarify_visualization:
   plotting:
     crop_window_left: 12
     crop_window_right: 12
-    max_examples_per_feature: 3
+    max_examples_per_feature: 10
     rank_examples_by: marker_minus_background
     # After inspecting clarify_example_candidates_for_review.csv, you can
     # lock exact slide examples here. Use example_id values from the CSV.
