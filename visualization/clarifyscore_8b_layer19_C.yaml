@@ -1,10 +1,12 @@
 experiment_name: visualize_clarifyscore_8b_layer19_C
 seed: 42
+
 model:
   name: unsloth/Llama-3.1-8B-Instruct
   backend: hf
   torch_dtype: bfloat16
   device_map: auto
+
 clarify_visualization:
   loader: dictionary_learning
   sae_repo: andyrdt/saes-llama-3.1-8b-instruct
@@ -12,17 +14,26 @@ clarify_visualization:
   hookpoint: model.layers.19
   module_path: model.layers.19
   vocab_path: data/vocabs/clarifying_vocab.json
+
   feature_source:
     mode: from_csv
     path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/C/feature_scores.csv
     score_column: score
     top_n: 3
+
   text_source:
-    path: visualization/data/cds2_8b_1b_new_experiments/predictions/base_llama31_8b_instruct_900/predictions.jsonl
-    fields: [gold_question, ambiguous_instruction]
-    max_per_field: 5
+    mode: discovery_parquet
+    path: data/processed/lmsys_llama31_8b_tokenized/train.parquet
+    token_column: tokens
+    text_column: text
+    max_rows: 4096
+    max_marker_examples: 5
+    max_background_examples: 0
+
   scoring:
     expand_range: [0, 0]
     ignore_special_tokens: true
     ignore_token_ids: []
+    heatmap_clip_percentile: 95.0
+
   output_dir: visualization/results/clarifyscore_8b_layer19_C
