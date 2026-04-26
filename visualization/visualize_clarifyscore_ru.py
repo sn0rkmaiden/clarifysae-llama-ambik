@@ -108,8 +108,6 @@ def _normalize_token_ids(value: Any) -> list[int]:
                 continue
         return out
 
-    # parquet / pyarrow / numpy values often expose .tolist() even when they are
-    # not plain Python lists. Recurse so nested array-likes are handled uniformly.
     if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
         try:
             converted = value.tolist()
@@ -145,7 +143,6 @@ def _normalize_token_ids(value: Any) -> list[int]:
     if isinstance(value, dict):
         return []
 
-    # Generic iterable fallback for parquet-backed containers.
     try:
         iterator = iter(value)
     except TypeError:
@@ -281,7 +278,7 @@ def _load_discovery_examples(
             continue
         rows_with_nonempty_tokens += 1
         token_tensor = torch.tensor(token_ids, dtype=torch.long)
-        marker_mask, _ = _match_vocab_positions(
+        marker_mask, _, _ = _match_vocab_positions(
             token_tensor,
             vocab_entries,
             expand_range=expand_range,
@@ -317,18 +314,17 @@ def _load_discovery_examples(
     examples = marker_examples + background_examples
     if not examples:
         preview = repr(first_nonempty_token_value)
-        if preview is not None and len(preview) > 200:
-            preview = preview[:200] + '...'
+        if preview and len(preview) > 240:
+            preview = preview[:240] + "..."
         raise ValueError(
             f"No usable examples were loaded from {path}. "
             f"Rows scanned: {rows_scanned}. Rows with non-empty parsed token ids: {rows_with_nonempty_tokens}. "
-            f"First observed token-column type: {first_nonempty_token_type!r}. "
-            f"Preview value: {preview}"
+            f"Token column: {token_column!r}. First observed token value type: {first_nonempty_token_type!r}. "
+            f"First observed token value preview: {preview}"
         )
     if not marker_examples:
         raise ValueError(
             f"No chunks with vocabulary matches were found in {path}. "
-            f"Rows scanned: {rows_scanned}. Rows with non-empty parsed token ids: {rows_with_nonempty_tokens}. "
             "Check that the parquet corpus, tokenizer, and vocabulary correspond to the discovery run."
         )
     return examples
@@ -385,15 +381,29 @@ def _load_vocab_entries(path: str | Path, tokenizer) -> list[VocabEntry]:
     return entries
 
 
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+    spans = sorted((int(a), int(b)) for a, b in spans if int(b) > int(a))
+    merged: list[list[int]] = [[spans[0][0], spans[0][1]]]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(a, b) for a, b in merged]
+
+
 def _match_vocab_positions(
     token_ids_1d: torch.Tensor,
     vocab_entries: list[VocabEntry],
     *,
     expand_range: tuple[int, int] = (0, 0),
-) -> tuple[torch.Tensor, list[str]]:
+) -> tuple[torch.Tensor, list[str], list[tuple[int, int]]]:
     seq_len = int(token_ids_1d.numel())
     mask = torch.zeros(seq_len, dtype=torch.bool)
     matched_phrases: list[str] = []
+    matched_spans: list[tuple[int, int]] = []
 
     left, right = int(expand_range[0]), int(expand_range[1])
     for entry in vocab_entries:
@@ -408,10 +418,11 @@ def _match_vocab_positions(
                     span_start = max(0, start - left)
                     span_end = min(seq_len, start + ids_len + right)
                     mask[span_start:span_end] = True
+                    matched_spans.append((span_start, span_end))
                     entry_matched = True
         if entry_matched:
             matched_phrases.append(entry.text)
-    return mask, matched_phrases
+    return mask, matched_phrases, _merge_spans(matched_spans)
 
 
 def _resolve_heatmap_vmax(values: torch.Tensor, clip_percentile: float = 95.0) -> float:
@@ -428,6 +439,46 @@ def _resolve_heatmap_vmax(values: torch.Tensor, clip_percentile: float = 95.0) -
     return max_value
 
 
+def _make_local_masks(
+    marker_mask: torch.Tensor,
+    matched_spans: list[tuple[int, int]],
+    seq_len: int,
+    local_window: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    marker_mask = marker_mask.bool().clone()
+    if local_window <= 0 or not matched_spans:
+        return marker_mask, (~marker_mask)
+    local_support = torch.zeros(seq_len, dtype=torch.bool)
+    for start, end in matched_spans:
+        left = max(0, start - local_window)
+        right = min(seq_len, end + local_window)
+        local_support[left:right] = True
+    local_background = local_support & (~marker_mask)
+    return marker_mask, local_background
+
+
+def _crop_to_focus(
+    token_labels: list[str],
+    activations: torch.Tensor,
+    marker_mask: torch.Tensor,
+    matched_spans: list[tuple[int, int]],
+    *,
+    window_left: int,
+    window_right: int,
+) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+    if not matched_spans:
+        return token_labels, activations, marker_mask
+    first_start = min(start for start, _ in matched_spans)
+    last_end = max(end for _, end in matched_spans)
+    crop_start = max(0, first_start - int(window_left))
+    crop_end = min(len(token_labels), last_end + int(window_right))
+    return (
+        token_labels[crop_start:crop_end],
+        activations[crop_start:crop_end],
+        marker_mask[crop_start:crop_end],
+    )
+
+
 def _plot_heatmap(
     out_path: Path,
     token_labels: list[str],
@@ -440,15 +491,15 @@ def _plot_heatmap(
     values = activations.detach().cpu().float()
     vmax = _resolve_heatmap_vmax(values, clip_percentile)
     matrix = values.unsqueeze(0).numpy()
-    width = max(10, min(0.45 * len(token_labels), 24))
-    fig, ax = plt.subplots(figsize=(width, 2.8))
+    width = max(6.5, min(0.42 * len(token_labels), 14))
+    fig, ax = plt.subplots(figsize=(width, 2.5))
     im = ax.imshow(matrix, aspect="auto", interpolation="nearest", vmin=0.0, vmax=vmax)
-    ax.set_title(title)
+    ax.set_title(title, fontsize=11)
     ax.set_yticks([0])
     ax.set_yticklabels(["активация"])
     ax.set_xticks(range(len(token_labels)))
-    ax.set_xticklabels(token_labels, rotation=60, ha="right", fontsize=11)
-    ax.set_xlabel("токены")
+    ax.set_xticklabels(token_labels, rotation=55, ha="right", fontsize=10)
+    ax.set_xlabel("tokens")
 
     if marker_mask is not None:
         marker_mask = marker_mask.cpu().bool()
@@ -482,10 +533,10 @@ def _plot_marker_background_boxplot(
     series: list[list[float]] = []
     for field, values in grouped.items():
         if values["marker"]:
-            labels.append(f"{field}\nмаркеры")
+            labels.append(f"{_display_field_name(field)}\nмаркеры")
             series.append(values["marker"])
         if values["background"]:
-            labels.append(f"{field}\nфон")
+            labels.append(f"{_display_field_name(field)}\nфон")
             series.append(values["background"])
 
     if not series:
@@ -493,12 +544,22 @@ def _plot_marker_background_boxplot(
 
     fig, ax = plt.subplots(figsize=(max(8, 1.7 * len(series)), 4.5))
     ax.boxplot(series, tick_labels=labels, showfliers=False)
-    ax.set_title(f"Признак {feature_idx}: активации на целевых и фоновых позициях")
+    ax.set_title(f"Feature {feature_idx}: activations on marker vs background positions")
     ax.set_ylabel("активация")
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
+
+
+def _example_quality(row: dict[str, Any], rank_mode: str) -> float:
+    marker = row.get("mean_marker_activation")
+    background = row.get("mean_background_activation")
+    marker = float(marker) if marker is not None and pd.notna(marker) else float("-inf")
+    background = float(background) if background is not None and pd.notna(background) else 0.0
+    if rank_mode == "marker_over_background":
+        return marker / max(background, 1e-6)
+    return marker - background
 
 
 def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
@@ -510,6 +571,7 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
     model, tokenizer, dtype = _load_model_and_tokenizer(model_cfg)
 
     scoring_cfg = viz_cfg.get("scoring", {})
+    plotting_cfg = viz_cfg.get("plotting", {})
     expand_range = tuple(scoring_cfg.get("expand_range", [0, 0]))
     vocab_entries = _load_vocab_entries(viz_cfg["vocab_path"], tokenizer)
     feature_ids = _select_features(viz_cfg["feature_source"])
@@ -551,8 +613,14 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
         ignore_token_ids.update(tokenizer.all_special_ids)
     ignore_token_ids.update(int(x) for x in scoring_cfg.get("ignore_token_ids", []))
     heatmap_clip_percentile = float(scoring_cfg.get("heatmap_clip_percentile", 95.0))
+    local_background_window = int(scoring_cfg.get("local_background_window", 12))
+    crop_window_left = int(plotting_cfg.get("crop_window_left", 12))
+    crop_window_right = int(plotting_cfg.get("crop_window_right", 12))
+    max_examples_per_feature = int(plotting_cfg.get("max_examples_per_feature", 3))
+    rank_examples_by = str(plotting_cfg.get("rank_examples_by", "marker_minus_background")).strip().lower()
 
     records: list[dict[str, Any]] = []
+    plot_candidates: list[dict[str, Any]] = []
 
     with extractor:
         for example_idx, example in enumerate(examples):
@@ -575,7 +643,7 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
 
             token_ids = torch.tensor(token_ids_list, dtype=torch.long)
             token_labels = [_clean_token_label(tokenizer, int(token_id)) for token_id in token_ids.tolist()]
-            marker_mask, matched_phrases = _match_vocab_positions(
+            marker_mask, matched_phrases, matched_spans = _match_vocab_positions(
                 token_ids,
                 vocab_entries,
                 expand_range=(int(expand_range[0]), int(expand_range[1])),
@@ -583,40 +651,56 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
             if ignore_token_ids:
                 ignore_mask = torch.tensor([int(tok) in ignore_token_ids for tok in token_ids.tolist()], dtype=torch.bool)
                 marker_mask &= ~ignore_mask
-                background_mask = (~marker_mask) & (~ignore_mask)
-            else:
-                background_mask = ~marker_mask
+            marker_mask_for_stats, background_mask_for_stats = _make_local_masks(
+                marker_mask,
+                matched_spans,
+                seq_len=int(token_ids.numel()),
+                local_window=local_background_window,
+            )
+            if ignore_token_ids:
+                background_mask_for_stats &= ~ignore_mask
 
             for feature_idx in feature_ids:
                 acts = latents[0, :, int(feature_idx)].detach().cpu().float()
-                heatmap_name = f"feature_{feature_idx}__{example.field}__example_{example_idx}.png"
-                _plot_heatmap(
-                    output_dir / heatmap_name,
-                    token_labels=token_labels,
-                    activations=acts,
-                    title=f"Признак {feature_idx} — {example.field}",
-                    marker_mask=marker_mask,
-                    clip_percentile=heatmap_clip_percentile,
-                )
+                marker_values = acts[marker_mask_for_stats].tolist()
+                background_values = acts[background_mask_for_stats].tolist()
+                mean_marker = float(torch.tensor(marker_values).mean().item()) if marker_values else None
+                mean_background = float(torch.tensor(background_values).mean().item()) if background_values else None
+                row = {
+                    "feature_idx": int(feature_idx),
+                    "example_id": example.example_id,
+                    "example_index": int(example_idx),
+                    "field": example.field,
+                    "text": example.text,
+                    "matched_phrases": matched_phrases,
+                    "n_tokens": int(token_ids.numel()),
+                    "n_marker_tokens": int(marker_mask_for_stats.sum().item()),
+                    "n_background_tokens": int(background_mask_for_stats.sum().item()),
+                    "mean_marker_activation": mean_marker,
+                    "mean_background_activation": mean_background,
+                    "marker_values": marker_values,
+                    "background_values": background_values,
+                }
+                records.append(row)
 
-                marker_values = acts[marker_mask].tolist()
-                background_values = acts[background_mask].tolist()
-                records.append(
-                    {
-                        "feature_idx": int(feature_idx),
-                        "example_id": example.example_id,
-                        "field": example.field,
-                        "text": example.text,
-                        "matched_phrases": matched_phrases,
-                        "n_tokens": int(token_ids.numel()),
-                        "n_marker_tokens": int(marker_mask.sum().item()),
-                        "n_background_tokens": int(background_mask.sum().item()),
-                        "mean_marker_activation": float(torch.tensor(marker_values).mean().item()) if marker_values else None,
-                        "mean_background_activation": float(torch.tensor(background_values).mean().item()) if background_values else None,
-                        "marker_values": marker_values,
-                        "background_values": background_values,
-                    }
-                )
+                if matched_spans and marker_values:
+                    cropped_labels, cropped_acts, cropped_mask = _crop_to_focus(
+                        token_labels,
+                        acts,
+                        marker_mask,
+                        matched_spans,
+                        window_left=crop_window_left,
+                        window_right=crop_window_right,
+                    )
+                    plot_candidates.append(
+                        {
+                            **row,
+                            "quality": _example_quality(row, rank_examples_by),
+                            "token_labels": cropped_labels,
+                            "activations": cropped_acts,
+                            "marker_mask": cropped_mask,
+                        }
+                    )
 
     summary_df = pd.DataFrame(records)
     summary_csv = summary_df.drop(columns=["marker_values", "background_values"], errors="ignore")
@@ -630,14 +714,29 @@ def run_clarifyscore_visualization(config: dict[str, Any]) -> None:
             int(feature_idx),
         )
 
+        ranked = sorted(
+            [row for row in plot_candidates if int(row["feature_idx"]) == int(feature_idx)],
+            key=lambda row: float(row["quality"]),
+            reverse=True,
+        )
+        for plot_rank, row in enumerate(ranked[:max_examples_per_feature]):
+            heatmap_name = f"feature_{feature_idx}__{row['field']}__best_{plot_rank}.png"
+            _plot_heatmap(
+                output_dir / heatmap_name,
+                token_labels=row["token_labels"],
+                activations=row["activations"],
+                title=f"Признак {feature_idx}\n{_display_field_name(row['field'])}",
+                marker_mask=row["marker_mask"],
+                clip_percentile=heatmap_clip_percentile,
+            )
+
     config_to_save = {
         "experiment_name": config.get("experiment_name", "clarifyscore_visualization"),
-        "selected_features": [int(x) for x in feature_ids],
+        "selected_features": feature_ids,
         "n_examples": len(examples),
         "config": config,
     }
     write_json(output_dir / "run_config.json", config_to_save)
-    print(f"Saved ClarifyScore visualizations to: {output_dir}")
 
 
 def parse_args() -> argparse.Namespace:
