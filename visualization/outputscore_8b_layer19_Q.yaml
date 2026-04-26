@@ -25,4 +25,8 @@ output_visualization:
   plots:
     top_k_tokens: 10
     selected_token_mode: candidate_best_after
+    max_candidate_tokens_for_plot: 8
+    drop_unreadable_candidate_tokens: true
+    show_saved_metrics_in_title: false
+    show_rank_in_title: false
   output_dir: visualization/results/outputscore_8b_layer19_Q

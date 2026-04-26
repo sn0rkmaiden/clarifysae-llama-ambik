@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -271,14 +272,40 @@ def _build_feature_runs(feature_cfg: dict[str, Any], prompt_cfg: dict[str, Any],
     return runs
 
 
+def _format_token_for_display(token: str, token_id: int | None = None) -> str:
+    """Return a slide-friendly token label.
+
+    Tokenizers often encode a leading space as a special marker such as ▁ or Ġ.
+    Earlier versions displayed this as ␠, but many Matplotlib fonts render that
+    symbol as a square box. For presentation plots we simply remove the marker
+    and show the human-readable token.
+    """
+    label = str(token)
+    label = label.replace("\n", "\\n").replace("\t", "\\t")
+    label = label.replace("▁", " ").replace("Ġ", " ")
+    label = label.strip()
+    if not label:
+        return f"id={token_id}" if token_id is not None else "∅"
+    return label
+
+
+def _is_readable_plot_label(label: str) -> bool:
+    """Filter tokens that usually render as tofu/square boxes in default fonts."""
+    if not label or "�" in label or label.startswith("id="):
+        return False
+    for ch in label:
+        category = unicodedata.category(ch)
+        if category.startswith("C"):
+            return False
+        name = unicodedata.name(ch, "")
+        if any(block in name for block in ("CJK", "HIRAGANA", "KATAKANA", "HANGUL")):
+            return False
+    return True
+
+
 def _clean_token_label(tokenizer, token_id: int) -> str:
     token = tokenizer.convert_ids_to_tokens([int(token_id)])[0]
-    token = token.replace("\n", "\\n")
-    token = token.replace("▁", "␠")
-    token = token.replace("Ġ", "␠")
-    if token == "":
-        token = "∅"
-    return token
+    return _format_token_for_display(token, int(token_id))
 
 
 def _next_token_probs(model, tokenizer, prompt: str, model_input_device: torch.device) -> torch.Tensor:
@@ -334,10 +361,10 @@ def _plot_topk_before_after(
     before_sorted = plot_df.sort_values("before", ascending=True)
     after_sorted = plot_df.sort_values("after", ascending=True)
     axes[0].barh(before_sorted["token"], before_sorted["before"])
-    axes[0].set_title("До воздействия")
+    axes[0].set_title("До усиления")
     axes[0].set_xlabel("вероятность")
     axes[1].barh(after_sorted["token"], after_sorted["after"])
-    axes[1].set_title("После воздействия")
+    axes[1].set_title("После усиления")
     axes[1].set_xlabel("вероятность")
 
     xmax = max(float(plot_df["before"].max()), float(plot_df["after"].max()), 1e-9) * 1.05
@@ -382,10 +409,14 @@ def _candidate_token_dataframe(
     for token_id in unique_ids:
         before = float(probs_before[token_id].item())
         after = float(probs_after[token_id].item())
+        raw_token = token_from_csv.get(int(token_id), tokenizer.convert_ids_to_tokens([int(token_id)])[0])
+        display_token = _format_token_for_display(raw_token, int(token_id))
         rows.append(
             {
                 "token_id": int(token_id),
-                "token": token_from_csv.get(int(token_id), _clean_token_label(tokenizer, int(token_id))).replace("\n", "\\n"),
+                "token": str(raw_token).replace("\n", "\\n"),
+                "display_token": display_token,
+                "readable_for_plot": _is_readable_plot_label(display_token),
                 "prob_before": before,
                 "prob_after": after,
                 "delta": after - before,
@@ -402,36 +433,62 @@ def _plot_candidate_tokens(
     saved_output_score: float | None,
     saved_prob: float | None,
     saved_rank: int | None,
+    max_tokens_for_plot: int = 8,
+    drop_unreadable_tokens: bool = True,
+    show_saved_metrics_in_title: bool = False,
+    show_rank_in_title: bool = False,
 ) -> None:
     if candidate_df.empty:
         return
 
-    plot_df = candidate_df.sort_values("prob_after", ascending=True)
+    # The CSV metrics may come from an older OutputScore runner. The bars below
+    # are recomputed by this visualization run, so the plot title should describe
+    # the plotted probabilities, not silently mix them with stored CSV values.
+    current_best = candidate_df.sort_values("prob_after", ascending=False).iloc[0]
+
+    plot_df = candidate_df.copy()
+    if drop_unreadable_tokens and "readable_for_plot" in plot_df.columns:
+        plot_df = plot_df[plot_df["readable_for_plot"].astype(bool)]
+    if plot_df.empty:
+        plot_df = candidate_df.copy()
+    if max_tokens_for_plot > 0:
+        plot_df = plot_df.sort_values("prob_after", ascending=False).head(int(max_tokens_for_plot))
+    plot_df = plot_df.sort_values("prob_after", ascending=True)
+
+    token_col = "display_token" if "display_token" in plot_df.columns else "token"
     fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.48 * len(plot_df))))
 
-    axes[0].barh(plot_df["token"], plot_df["prob_before"])
-    axes[0].set_title("До воздействия")
+    axes[0].barh(plot_df[token_col], plot_df["prob_before"])
+    axes[0].set_title("До усиления")
     axes[0].set_xlabel("вероятность")
 
-    axes[1].barh(plot_df["token"], plot_df["prob_after"])
-    axes[1].set_title("После воздействия")
+    axes[1].barh(plot_df[token_col], plot_df["prob_after"])
+    axes[1].set_title("После усиления")
     axes[1].set_xlabel("вероятность")
 
     xmax = max(float(plot_df["prob_before"].max()), float(plot_df["prob_after"].max()), 1e-9) * 1.05
     axes[0].set_xlim(0, xmax)
     axes[1].set_xlim(0, xmax)
 
-    subtitle_parts = []
-    if saved_output_score is not None:
-        subtitle_parts.append(f"OutputScore={saved_output_score:.4g}")
-    if saved_prob is not None:
-        subtitle_parts.append(f"p={saved_prob:.4g}")
-    if saved_rank is not None:
-        subtitle_parts.append(f"rank={saved_rank}")
-    subtitle = " | ".join(subtitle_parts)
-    title = f"Признак {feature_idx}: токены, связанные с признаком"
-    if subtitle:
-        title += f"\n{subtitle}"
+    best_label = str(current_best.get("display_token", current_best.get("token", "")))
+    prob_after = float(current_best["prob_after"])
+    title = (
+        f"Признак {feature_idx}: токены, связанные с признаком"
+        f"\nЛучший токен-кандидат после усиления: «{best_label}», "
+        f"вероятность = {prob_after:.2f}"
+    )
+    if show_rank_in_title:
+        title += f", место в распределении = {int(current_best['rank_after'])}"
+    if show_saved_metrics_in_title:
+        stored_parts = []
+        if saved_output_score is not None:
+            stored_parts.append(f"CSV OutputScore={saved_output_score:.4g}")
+        if saved_prob is not None:
+            stored_parts.append(f"CSV p={saved_prob:.4g}")
+        if saved_rank is not None:
+            stored_parts.append(f"CSV rank={saved_rank}")
+        if stored_parts:
+            title += "\n" + " | ".join(stored_parts)
     fig.suptitle(title)
 
     fig.tight_layout()
@@ -487,9 +544,9 @@ def _plot_selected_token_delta(
     delta = after - before
 
     fig, ax = plt.subplots(figsize=(5.5, 4.0))
-    ax.bar(["до", "после"], [before, after])
+    ax.bar(["до усиления", "после усиления"], [before, after])
     ax.set_ylabel("вероятность")
-    ax.set_title(f"Признак {feature_idx}: изменение вероятности токена {token!r}")
+    ax.set_title(f"Признак {feature_idx}: вероятность токена «{token}»")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -534,6 +591,10 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
     plots_cfg = viz_cfg.get("plots", {})
     top_k = int(plots_cfg.get("top_k_tokens", 10))
     selected_token_mode = str(plots_cfg.get("selected_token_mode", "max_delta")).strip().lower()
+    max_candidate_tokens_for_plot = int(plots_cfg.get("max_candidate_tokens_for_plot", 8))
+    drop_unreadable_candidate_tokens = bool(plots_cfg.get("drop_unreadable_candidate_tokens", True))
+    show_saved_metrics_in_title = bool(plots_cfg.get("show_saved_metrics_in_title", False))
+    show_rank_in_title = bool(plots_cfg.get("show_rank_in_title", False))
 
     summary_rows: list[dict[str, Any]] = []
 
@@ -593,6 +654,10 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
             saved_output_score=run.saved_output_score,
             saved_prob=run.saved_prob,
             saved_rank=run.saved_rank,
+            max_tokens_for_plot=max_candidate_tokens_for_plot,
+            drop_unreadable_tokens=drop_unreadable_candidate_tokens,
+            show_saved_metrics_in_title=show_saved_metrics_in_title,
+            show_rank_in_title=show_rank_in_title,
         )
 
         selected_token_id, selected_mode_used = _select_token_id(
