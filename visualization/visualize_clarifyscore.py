@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,21 +94,41 @@ def _select_features(feature_cfg: dict[str, Any]) -> list[int]:
 def _normalize_token_ids(value: Any) -> list[int]:
     if value is None:
         return []
+
     if isinstance(value, torch.Tensor):
         return [int(x) for x in value.flatten().tolist()]
+
     if isinstance(value, (list, tuple)):
         out: list[int] = []
         for x in value:
             try:
                 out.append(int(x))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
         return out
+
+    # parquet / pyarrow / numpy values often expose .tolist() even when they are
+    # not plain Python lists. Recurse so nested array-likes are handled uniformly.
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        try:
+            converted = value.tolist()
+        except Exception:
+            converted = None
+        else:
+            if converted is not value:
+                return _normalize_token_ids(converted)
+
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
             return []
         if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = ast.literal_eval(stripped)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                return _normalize_token_ids(parsed)
             pieces = [piece.strip() for piece in stripped[1:-1].split(",")]
             out: list[int] = []
             for piece in pieces:
@@ -115,10 +136,32 @@ def _normalize_token_ids(value: Any) -> list[int]:
                     continue
                 try:
                     out.append(int(piece))
-                except ValueError:
+                except (TypeError, ValueError, OverflowError):
                     continue
             return out
-    return []
+        return []
+
+    if isinstance(value, dict):
+        return []
+
+    # Generic iterable fallback for parquet-backed containers.
+    try:
+        iterator = iter(value)
+    except TypeError:
+        iterator = None
+    if iterator is not None:
+        out: list[int] = []
+        for x in iterator:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return out
+
+    try:
+        return [int(value)]
+    except (TypeError, ValueError, OverflowError):
+        return []
 
 
 def _decode_token_ids(tokenizer, token_ids: list[int]) -> str:
@@ -199,16 +242,30 @@ def _load_discovery_examples(
     max_background_examples = int(text_cfg.get("max_background_examples", 0))
 
     df = pd.read_parquet(path)
+    if token_column not in df.columns:
+        raise KeyError(
+            f"Token column {token_column!r} not found in {path}. Available columns: {list(df.columns)}"
+        )
     if max_rows is not None:
         df = df.head(int(max_rows))
 
     marker_examples: list[TextExample] = []
     background_examples: list[TextExample] = []
+    rows_scanned = 0
+    rows_with_nonempty_tokens = 0
+    first_nonempty_token_value: Any | None = None
+    first_nonempty_token_type: str | None = None
 
     for row_idx, row in enumerate(df.to_dict(orient="records")):
-        token_ids = _normalize_token_ids(row.get(token_column))
+        rows_scanned += 1
+        raw_value = row.get(token_column)
+        if first_nonempty_token_value is None and raw_value is not None:
+            first_nonempty_token_value = raw_value
+            first_nonempty_token_type = type(raw_value).__name__
+        token_ids = _normalize_token_ids(raw_value)
         if not token_ids:
             continue
+        rows_with_nonempty_tokens += 1
         token_tensor = torch.tensor(token_ids, dtype=torch.long)
         marker_mask, _ = _match_vocab_positions(
             token_tensor,
@@ -222,14 +279,14 @@ def _load_discovery_examples(
         if has_marker and len(marker_examples) >= max_marker_examples:
             continue
 
-        text_value = row.get(text_column)
+        text_value = row.get(text_column) if text_column in row else None
         if isinstance(text_value, str) and text_value.strip():
             text = text_value.strip()
         else:
             text = _decode_token_ids(tokenizer, token_ids)
 
         example = TextExample(
-            example_id=str(row.get("id", row_idx)),
+            example_id=str(row.get("id", row.get("conversation_id", row_idx))),
             field="discovery_marker" if has_marker else "discovery_background",
             text=text,
             token_ids=token_ids,
@@ -245,10 +302,19 @@ def _load_discovery_examples(
 
     examples = marker_examples + background_examples
     if not examples:
-        raise ValueError(f"No usable examples were loaded from {path}")
+        preview = repr(first_nonempty_token_value)
+        if preview is not None and len(preview) > 200:
+            preview = preview[:200] + '...'
+        raise ValueError(
+            f"No usable examples were loaded from {path}. "
+            f"Rows scanned: {rows_scanned}. Rows with non-empty parsed token ids: {rows_with_nonempty_tokens}. "
+            f"First observed token-column type: {first_nonempty_token_type!r}. "
+            f"Preview value: {preview}"
+        )
     if not marker_examples:
         raise ValueError(
             f"No chunks with vocabulary matches were found in {path}. "
+            f"Rows scanned: {rows_scanned}. Rows with non-empty parsed token ids: {rows_with_nonempty_tokens}. "
             "Check that the parquet corpus, tokenizer, and vocabulary correspond to the discovery run."
         )
     return examples
