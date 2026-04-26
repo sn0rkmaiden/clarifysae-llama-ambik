@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 
 """
-python visualization/visualize_outputscore.py --config visualization/outputscore_8b_layer19_C.yaml
+python visualization/visualize_outputscore.py --config visualization/outputscore_8b_layer23_C.yaml
 """
 
 from clarifysae_llama.config import load_yaml
