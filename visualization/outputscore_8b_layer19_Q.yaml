@@ -1,4 +1,4 @@
-experiment_name: visualize_outputscore_8b_layer23_Q
+experiment_name: visualize_outputscore_8b_layer19_Q
 seed: 42
 model:
   name: unsloth/Llama-3.1-8B-Instruct
@@ -8,12 +8,12 @@ model:
 output_visualization:
   loader: dictionary_learning
   sae_repo: andyrdt/saes-llama-3.1-8b-instruct
-  sae_file: resid_post_layer_23/trainer_1
-  hookpoint: model.layers.23
-  module_path: model.layers.23
+  sae_file: resid_post_layer_19/trainer_1
+  hookpoint: model.layers.19
+  module_path: model.layers.19
   feature_source:
     mode: from_csv
-    path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer23resid/output_scores/Q_topk50/output_scores.csv
+    path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/output_scores/Q_topk50/output_scores.csv
     score_column: output_score
     top_n: 5
   prompt_source:
@@ -25,4 +25,4 @@ output_visualization:
   plots:
     top_k_tokens: 10
     selected_token_mode: saved_best
-  output_dir: visualization/results/outputscore_8b_layer23_Q
+  output_dir: visualization/results/outputscore_8b_layer19_Q
