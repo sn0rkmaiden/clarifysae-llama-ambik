@@ -28,7 +28,7 @@ clarify_visualization:
     text_column: text
     max_rows: 4096
     max_marker_examples: 5
-    max_background_examples: 0
+    max_background_examples: 2
 
   scoring:
     expand_range: [0, 0]
