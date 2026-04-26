@@ -37,7 +37,7 @@ clarify_visualization:
       max_chars: 3000
       reject_patterns:
         - "(?i)\\b(sex|sexual|porn|nude|naked|xxx|fetish|erotic)\\b"
-        - "(?i)\\b(fuck|shit|bitch|dick|pussy|cock)\\b"
+        - "(?i)\\b(fuck|shit|bitch|dick|pussy|cock|heroine)\\b"
         - "(?i)\\b(kill|murder|suicide|self-harm|rape|incest)\\b"
         - "<\\|reserved_special_token"
 
