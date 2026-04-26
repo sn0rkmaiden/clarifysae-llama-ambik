@@ -35,5 +35,12 @@ clarify_visualization:
     ignore_special_tokens: true
     ignore_token_ids: []
     heatmap_clip_percentile: 95.0
+    local_background_window: 12
+
+  plotting:
+    crop_window_left: 12
+    crop_window_right: 12
+    max_examples_per_feature: 3
+    rank_examples_by: marker_minus_background
 
   output_dir: visualization/results/clarifyscore_8b_layer19_Q
