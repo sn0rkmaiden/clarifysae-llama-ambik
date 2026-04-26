@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 
 """
-python visualization/visualize_outputscore.py --config visualization/outputscore_8b_layer23_C.yaml
+python visualization/visualize_outputscore.py --config visualization/outputscore_8b_layer19_C.yaml
 """
 
 from clarifysae_llama.config import load_yaml
@@ -41,6 +41,10 @@ class FeatureRun:
     best_token_id: int | None
     best_token: str | None
     saved_output_score: float | None
+    saved_prob: float | None
+    saved_rank: int | None
+    candidate_token_ids: list[int]
+    candidate_tokens: list[str]
 
 
 class FixedDeltaSingleFeatureIntervention(SingleFeatureIntervention):
@@ -143,6 +147,29 @@ def _parse_maybe_list(value: Any) -> list[Any]:
     return []
 
 
+def _parse_int_list(value: Any) -> list[int]:
+    items = _parse_maybe_list(value)
+    out: list[int] = []
+    for item in items:
+        try:
+            out.append(int(item))
+        except Exception:
+            continue
+    return out
+
+
+def _parse_str_list(value: Any) -> list[str]:
+    items = _parse_maybe_list(value)
+    return [str(item) for item in items]
+
+
+def _first_present(row: pd.Series, columns: list[str]) -> Any | None:
+    for column in columns:
+        if column in row and pd.notna(row[column]):
+            return row[column]
+    return None
+
+
 def _build_feature_runs(feature_cfg: dict[str, Any], prompt_cfg: dict[str, Any], steering_cfg: dict[str, Any]) -> list[FeatureRun]:
     mode = str(feature_cfg.get("mode", "manual")).strip().lower()
     if mode == "manual":
@@ -159,6 +186,10 @@ def _build_feature_runs(feature_cfg: dict[str, Any], prompt_cfg: dict[str, Any],
                 best_token_id=None,
                 best_token=None,
                 saved_output_score=None,
+                saved_prob=None,
+                saved_rank=None,
+                candidate_token_ids=[],
+                candidate_tokens=[],
             )
             for feature_id in feature_ids
         ]
@@ -216,6 +247,12 @@ def _build_feature_runs(feature_cfg: dict[str, Any], prompt_cfg: dict[str, Any],
                 best_token = str(row[column])
                 break
 
+        saved_prob_value = _first_present(row, ["top_token_score", "prob", "output_top_token_score"])
+        saved_rank_value = _first_present(row, ["best_rank", "rank", "output_best_rank"])
+
+        candidate_token_ids = _parse_int_list(row["top_token_ids"]) if "top_token_ids" in row else []
+        candidate_tokens = _parse_str_list(row["top_tokens"]) if "top_tokens" in row else []
+
         runs.append(
             FeatureRun(
                 feature_idx=int(row[feature_column]),
@@ -225,6 +262,10 @@ def _build_feature_runs(feature_cfg: dict[str, Any], prompt_cfg: dict[str, Any],
                 best_token_id=best_token_id,
                 best_token=best_token,
                 saved_output_score=float(row[score_column]) if pd.notna(row[score_column]) else None,
+                saved_prob=float(saved_prob_value) if saved_prob_value is not None else None,
+                saved_rank=int(saved_rank_value) if saved_rank_value is not None else None,
+                candidate_token_ids=candidate_token_ids,
+                candidate_tokens=candidate_tokens,
             )
         )
     return runs
@@ -267,6 +308,11 @@ def _plot_topk_before_after(
     feature_idx: int,
     top_k: int,
 ) -> pd.DataFrame:
+    """Plot ordinary top-k tokens before/after steering.
+
+    This is useful as a sanity check, but it is not the main OutputScore plot:
+    OutputScore is defined on feature-associated candidate tokens.
+    """
     before = _topk_dataframe(tokenizer, probs_before, top_k)
     after = _topk_dataframe(tokenizer, probs_after, top_k)
 
@@ -279,30 +325,152 @@ def _plot_topk_before_after(
                 "token": _clean_token_label(tokenizer, int(token_id)),
                 "before": float(probs_before[int(token_id)].item()),
                 "after": float(probs_after[int(token_id)].item()),
+                "delta": float((probs_after[int(token_id)] - probs_before[int(token_id)]).item()),
             }
         )
     plot_df = pd.DataFrame(rows).sort_values("after", ascending=False).head(max(top_k, len(before)))
 
-    # Use the same token order and the same x-axis limits on both panels.
-    # Otherwise before/after changes can be visually exaggerated or hidden.
-    plot_sorted = plot_df.sort_values("after", ascending=True)
-    xmax = max(float(plot_sorted["before"].max()), float(plot_sorted["after"].max()))
-    xmax = max(xmax * 1.05, 1e-8)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.45 * len(plot_sorted))))
-    axes[0].barh(plot_sorted["token"], plot_sorted["before"])
+    fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.45 * len(plot_df))))
+    before_sorted = plot_df.sort_values("before", ascending=True)
+    after_sorted = plot_df.sort_values("after", ascending=True)
+    axes[0].barh(before_sorted["token"], before_sorted["before"])
     axes[0].set_title("До воздействия")
     axes[0].set_xlabel("вероятность")
-    axes[0].set_xlim(0.0, xmax)
-    axes[1].barh(plot_sorted["token"], plot_sorted["after"])
+    axes[1].barh(after_sorted["token"], after_sorted["after"])
     axes[1].set_title("После воздействия")
     axes[1].set_xlabel("вероятность")
-    axes[1].set_xlim(0.0, xmax)
-    fig.suptitle(f"Признак {feature_idx}: распределение вероятностей следующего токена")
+
+    xmax = max(float(plot_df["before"].max()), float(plot_df["after"].max()), 1e-9) * 1.05
+    axes[0].set_xlim(0, xmax)
+    axes[1].set_xlim(0, xmax)
+
+    fig.suptitle(f"Признак {feature_idx}: глобальные top-k токены до/после")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return plot_df
+
+
+def _rank_tensor_descending(probs: torch.Tensor) -> torch.Tensor:
+    order = torch.argsort(probs, dim=0, descending=True)
+    ranks = torch.empty_like(order)
+    ranks[order] = torch.arange(order.numel(), dtype=order.dtype)
+    return ranks
+
+
+def _candidate_token_dataframe(
+    tokenizer,
+    probs_before: torch.Tensor,
+    probs_after: torch.Tensor,
+    candidate_token_ids: list[int],
+    candidate_tokens: list[str] | None = None,
+) -> pd.DataFrame:
+    """Build the table that actually corresponds to OutputScore.
+
+    candidate_token_ids are the feature-associated tokens from the SAE decoder/logit lens
+    stored in output_scores.csv as top_token_ids/top_tokens.
+    """
+    unique_ids = list(dict.fromkeys(int(x) for x in candidate_token_ids))
+    ranks_after = _rank_tensor_descending(probs_after)
+
+    token_from_csv: dict[int, str] = {}
+    if candidate_tokens:
+        for token_id, token in zip(candidate_token_ids, candidate_tokens):
+            token_from_csv[int(token_id)] = str(token)
+
+    rows: list[dict[str, Any]] = []
+    for token_id in unique_ids:
+        before = float(probs_before[token_id].item())
+        after = float(probs_after[token_id].item())
+        rows.append(
+            {
+                "token_id": int(token_id),
+                "token": token_from_csv.get(int(token_id), _clean_token_label(tokenizer, int(token_id))).replace("\n", "\\n"),
+                "prob_before": before,
+                "prob_after": after,
+                "delta": after - before,
+                "rank_after": int(ranks_after[token_id].item()) + 1,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _plot_candidate_tokens(
+    out_path: Path,
+    candidate_df: pd.DataFrame,
+    feature_idx: int,
+    saved_output_score: float | None,
+    saved_prob: float | None,
+    saved_rank: int | None,
+) -> None:
+    if candidate_df.empty:
+        return
+
+    plot_df = candidate_df.sort_values("prob_after", ascending=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, max(4.5, 0.48 * len(plot_df))))
+
+    axes[0].barh(plot_df["token"], plot_df["prob_before"])
+    axes[0].set_title("До воздействия")
+    axes[0].set_xlabel("вероятность")
+
+    axes[1].barh(plot_df["token"], plot_df["prob_after"])
+    axes[1].set_title("После воздействия")
+    axes[1].set_xlabel("вероятность")
+
+    xmax = max(float(plot_df["prob_before"].max()), float(plot_df["prob_after"].max()), 1e-9) * 1.05
+    axes[0].set_xlim(0, xmax)
+    axes[1].set_xlim(0, xmax)
+
+    subtitle_parts = []
+    if saved_output_score is not None:
+        subtitle_parts.append(f"OutputScore={saved_output_score:.4g}")
+    if saved_prob is not None:
+        subtitle_parts.append(f"p={saved_prob:.4g}")
+    if saved_rank is not None:
+        subtitle_parts.append(f"rank={saved_rank}")
+    subtitle = " | ".join(subtitle_parts)
+    title = f"Признак {feature_idx}: токены, связанные с признаком"
+    if subtitle:
+        title += f"\n{subtitle}"
+    fig.suptitle(title)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _select_token_id(
+    mode: str,
+    run: FeatureRun,
+    probs_before: torch.Tensor,
+    probs_after: torch.Tensor,
+) -> tuple[int, str]:
+    mode = mode.strip().lower()
+
+    if mode == "saved_best" and run.best_token_id is not None:
+        return int(run.best_token_id), "saved_best"
+
+    candidate_ids = list(dict.fromkeys(int(x) for x in run.candidate_token_ids))
+    if candidate_ids:
+        if mode in {"saved_best", "candidate_best_after", "candidate"}:
+            values = probs_after[candidate_ids]
+            return int(candidate_ids[int(torch.argmax(values).item())]), "candidate_best_after"
+        if mode == "candidate_max_delta":
+            values = probs_after[candidate_ids] - probs_before[candidate_ids]
+            return int(candidate_ids[int(torch.argmax(values).item())]), "candidate_max_delta"
+
+    if mode in {"saved_best", "candidate_best_after", "candidate_max_delta", "candidate"}:
+        delta = probs_after - probs_before
+        return int(torch.argmax(delta).item()), "global_max_delta_fallback"
+
+    if mode == "max_delta":
+        delta = probs_after - probs_before
+        return int(torch.argmax(delta).item()), "global_max_delta"
+
+    raise ValueError(
+        f"Unknown selected_token_mode={mode!r}. Expected one of: "
+        "saved_best, candidate_best_after, candidate_max_delta, max_delta."
+    )
 
 
 def _plot_selected_token_delta(
@@ -365,7 +533,7 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
 
     plots_cfg = viz_cfg.get("plots", {})
     top_k = int(plots_cfg.get("top_k_tokens", 10))
-    selected_token_mode = str(plots_cfg.get("selected_token_mode", "saved_best")).strip().lower()
+    selected_token_mode = str(plots_cfg.get("selected_token_mode", "max_delta")).strip().lower()
 
     summary_rows: list[dict[str, Any]] = []
 
@@ -407,13 +575,32 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
             top_k,
         )
 
-        if selected_token_mode == "saved_best" and run.best_token_id is not None:
-            selected_token_id = int(run.best_token_id)
-            selection_mode_used = "saved_best"
-        else:
-            delta = probs_after - probs_before
-            selected_token_id = int(torch.argmax(delta).item())
-            selection_mode_used = "max_delta"
+        candidate_df = _candidate_token_dataframe(
+            tokenizer=tokenizer,
+            probs_before=probs_before,
+            probs_after=probs_after,
+            candidate_token_ids=run.candidate_token_ids,
+            candidate_tokens=run.candidate_tokens,
+        )
+        candidate_df.to_csv(
+            output_dir / f"feature_{run.feature_idx}__run_{run_idx}__candidate_token_table.csv",
+            index=False,
+        )
+        _plot_candidate_tokens(
+            output_dir / f"feature_{run.feature_idx}__run_{run_idx}__candidate_tokens_before_after.png",
+            candidate_df=candidate_df,
+            feature_idx=int(run.feature_idx),
+            saved_output_score=run.saved_output_score,
+            saved_prob=run.saved_prob,
+            saved_rank=run.saved_rank,
+        )
+
+        selected_token_id, selected_mode_used = _select_token_id(
+            selected_token_mode,
+            run,
+            probs_before,
+            probs_after,
+        )
 
         token_stats = _plot_selected_token_delta(
             output_dir / f"feature_{run.feature_idx}__run_{run_idx}__selected_token_delta.png",
@@ -434,10 +621,12 @@ def run_outputscore_visualization(config: dict[str, Any]) -> None:
                 "feature_idx": int(run.feature_idx),
                 "prompt": run.prompt,
                 "saved_output_score": run.saved_output_score,
+                "saved_prob": run.saved_prob,
+                "saved_rank": run.saved_rank,
+                "candidate_token_ids": run.candidate_token_ids,
+                "candidate_tokens": run.candidate_tokens,
                 "selected_token_mode_requested": selected_token_mode,
-                "selected_token_mode_used": selection_mode_used,
-                "saved_best_token_id": run.best_token_id,
-                "saved_best_token": run.best_token,
+                "selected_token_mode_used": selected_mode_used,
                 "used_steering_delta": context.last_delta,
                 "used_local_max_act": context.last_local_max_act,
                 **token_stats,

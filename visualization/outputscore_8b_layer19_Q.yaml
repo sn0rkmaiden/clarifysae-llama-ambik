@@ -15,7 +15,7 @@ output_visualization:
     mode: from_csv
     path: visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer19resid/output_scores/Q_topk50/output_scores.csv
     score_column: output_score
-    top_n: 5
+    top_n: 3
   prompt_source:
     use_saved_prompt: true
     prompt_column: prompt
@@ -24,5 +24,5 @@ output_visualization:
     amp_columns: [amp_factor, output_amp_factor]
   plots:
     top_k_tokens: 10
-    selected_token_mode: saved_best
+    selected_token_mode: candidate_best_after
   output_dir: visualization/results/outputscore_8b_layer19_Q
