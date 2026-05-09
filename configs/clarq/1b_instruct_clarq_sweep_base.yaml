@@ -81,6 +81,7 @@ clarq:
   multi_info_provider_agent: false
   max_turns_cap: 22
   write_html_report: false
+  unload_models_before_judge: true
 
 console:
   show_progress: true
