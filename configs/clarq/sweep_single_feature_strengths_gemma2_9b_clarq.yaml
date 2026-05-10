@@ -3,7 +3,7 @@ base_config: configs/clarq/gemma2_9b_clarq_sweep_base.yaml
 
 sweep:
   mode: single_feature_strength
-  strengths: [-10.0, -5.0, -3.0, 1.0, 3.0, 5.0, 10.0]
+  strengths: [-10.0, -5.0, -3.0, -1.0, 1.0, 3.0, 5.0, 10.0]
   groups:
     - vocab: Q
       hookpoint: blocks.20.hook_resid_post
