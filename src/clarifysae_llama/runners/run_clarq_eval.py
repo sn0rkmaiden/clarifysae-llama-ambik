@@ -114,7 +114,13 @@ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dic
             'feature': (config.get('steering') or {}).get('feature_indices', [None])[0],
             'strength': (config.get('steering') or {}).get('strength'),
             'hookpoint': (config.get('steering') or {}).get('hookpoint'),
+            'module_path': (config.get('steering') or {}).get('module_path'),
+            'loader': (config.get('steering') or {}).get('loader'),
             'sae_repo': (config.get('steering') or {}).get('sae_repo'),
+            'sae_file': (config.get('steering') or {}).get('sae_file'),
+            'sae_id': (config.get('steering') or {}).get('sae_id'),
+            'mode': (config.get('steering') or {}).get('mode'),
+            'max_act': ((config.get('steering') or {}).get('runtime') or {}).get('max_act'),
         }
         if config.get('steering', {}).get('enabled', False)
         else None,

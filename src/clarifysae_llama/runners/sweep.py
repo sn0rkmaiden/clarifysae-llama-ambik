@@ -38,6 +38,7 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'hookpoint',
     'module_path',
     'sae_file',
+    'sae_id',
     'feature_index',
     'strength',
     'config_path',
@@ -54,6 +55,7 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'hookpoint',
     'module_path',
     'sae_file',
+    'sae_id',
     'feature_index',
     'strength',
     'config_path',
@@ -203,6 +205,8 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
             raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
         if 'sae_file' in group and not isinstance(group['sae_file'], str):
             raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
+        if 'sae_id' in group and not isinstance(group['sae_id'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_id must be a string if provided.')
 
 
 def _emit_run_start(
@@ -353,6 +357,7 @@ def _feature_group_key(row: dict[str, Any]) -> tuple[Any, ...]:
         row.get('hookpoint'),
         row.get('module_path'),
         row.get('sae_file'),
+        row.get('sae_id'),
         row.get('feature_index'),
     )
 
@@ -496,7 +501,9 @@ def _build_clarq_feature_dashboard_html(
     if first_row.get('module_path') not in (None, ''):
         subtitle_bits.append(f"Module: {escape(str(first_row.get('module_path')))}")
     if first_row.get('sae_file') not in (None, ''):
-        subtitle_bits.append(f"SAE: {escape(str(first_row.get('sae_file')))}")
+        subtitle_bits.append(f"SAE file: {escape(str(first_row.get('sae_file')))}")
+    if first_row.get('sae_id') not in (None, ''):
+        subtitle_bits.append(f"SAE id: {escape(str(first_row.get('sae_id')))}")
 
     return f"""<!doctype html>
 <html lang='en'>
@@ -604,6 +611,7 @@ def _write_clarq_feature_dashboards(
             'hookpoint': group_rows[0].get('hookpoint'),
             'module_path': group_rows[0].get('module_path'),
             'sae_file': group_rows[0].get('sae_file'),
+            'sae_id': group_rows[0].get('sae_id'),
             'strengths': ', '.join(_display_value(row.get('strength')) for row in ordered_rows),
             'dashboard_path': str(dashboard_path),
         })
@@ -945,6 +953,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
         hookpoint = str(group['hookpoint'])
         module_path = group.get('module_path')
         sae_file = group.get('sae_file')
+        sae_id = group.get('sae_id')
         features = group['features']
 
         for feature_index in features:
@@ -961,6 +970,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
                 if sae_file is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+                if sae_id is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
 
                 run_name = _build_single_feature_run_name(
                     experiment_prefix=sweep_name,
@@ -985,6 +996,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
                 }
@@ -1026,6 +1038,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
                     'config_path': str(cfg_path) if cfg_path is not None else None,
@@ -1089,6 +1102,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
         hookpoint = str(group['hookpoint'])
         module_path = group.get('module_path')
         sae_file = group.get('sae_file')
+        sae_id = group.get('sae_id')
         features = group['features']
 
         for feature_index in features:
@@ -1110,6 +1124,8 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
                 if sae_file is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+                if sae_id is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
 
                 run_name = _build_single_feature_run_name(
                     experiment_prefix=sweep_name,
@@ -1134,6 +1150,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
                 }
@@ -1175,6 +1192,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
                     'config_path': str(cfg_path) if cfg_path is not None else None,

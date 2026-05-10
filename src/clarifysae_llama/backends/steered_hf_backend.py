@@ -24,6 +24,7 @@ class SteeredHFCausalBackend(HFCausalBackend):
                 strength=float(steering_cfg["strength"]),
                 loader=steering_cfg.get("loader", "sparsify"),
                 sae_file=steering_cfg.get("sae_file"),
+                sae_id=steering_cfg.get("sae_id"),
                 module_path=steering_cfg.get("module_path"),
                 mode=steering_cfg.get("mode", "additive"),
                 apply_to=steering_cfg.get("apply_to", "all_positions"),
@@ -32,6 +33,7 @@ class SteeredHFCausalBackend(HFCausalBackend):
                 preserve_unsteered_residual=runtime_cfg.get("preserve_unsteered_residual", False),
                 clamp_latents=runtime_cfg.get("clamp_latents"),
                 log_feature_acts=runtime_cfg.get("log_feature_acts", False),
+                max_act=runtime_cfg.get("max_act"),
             ),
         )
 

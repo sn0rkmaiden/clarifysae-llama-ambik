@@ -5,10 +5,9 @@ from typing import Any
 
 import torch
 from huggingface_hub import snapshot_download
-from sparsify import Sae
-
 from clarifysae_llama.discovery.sae_utils import (
     SparseLatents,
+    encode_dense,
     encode_sparse,
     get_decoder_matrix,
     get_num_latents,
@@ -42,7 +41,14 @@ def normalize_hookpoint_to_module_path(hookpoint: str) -> str:
     if hp.startswith("layers."):
         return f"model.{hp}"
 
-    raise ValueError(f"Unsupported hookpoint for Llama-style model: {hookpoint}")
+    # SAE Lens / TransformerLens-style residual-stream hook names used in the
+    # older Gemma ClarQ repo, e.g. blocks.12.hook_resid_post.
+    if hp.startswith("blocks.") and hp.endswith(".hook_resid_post"):
+        parts = hp.split(".")
+        if len(parts) >= 3 and parts[1].isdigit():
+            return f"model.layers.{parts[1]}"
+
+    raise ValueError(f"Unsupported hookpoint/module path: {hookpoint}")
 
 
 def resolve_module_path(hookpoint: str, module_path: str | None = None) -> str:
@@ -101,18 +107,41 @@ def _resolve_sae_runtime(loader: str, target_device: torch.device, model_dtype: 
     return sae_device, sae_dtype
 
 
+def _load_saelens_sae(*, sae_repo: str, sae_id: str, device: torch.device, dtype: torch.dtype):
+    try:
+        from sae_lens import SAE
+    except ImportError as exc:
+        raise ImportError(
+            "sae_lens is required for steering.loader='saelens'. Install it with: pip install sae-lens"
+        ) from exc
+
+    loaded = SAE.from_pretrained(release=sae_repo, sae_id=sae_id, device=str(device))
+    if isinstance(loaded, tuple):
+        sae = loaded[0]
+    else:
+        sae = loaded
+    return move_sae_to_device_dtype(sae, device=device, dtype=dtype)
+
+
 def load_sae(
     *,
     loader: str,
     sae_repo: str,
     hookpoint: str,
     sae_file: str | None,
+    sae_id: str | None,
     device: torch.device,
     dtype: torch.dtype,
 ):
     loader_name = str(loader).strip().lower().replace("-", "_")
 
     if loader_name == "sparsify":
+        try:
+            from sparsify import Sae
+        except ImportError as exc:
+            raise ImportError(
+                "sparsify is required for steering.loader='sparsify'. Install it with: pip install eai-sparsify"
+            ) from exc
         sae = Sae.load_from_hub(sae_repo, hookpoint=hookpoint)
         return move_sae_to_device_dtype(sae, device=device, dtype=dtype)
 
@@ -143,8 +172,13 @@ def load_sae(
         sae, _config = dl_utils.load_dictionary(str(trainer_dir), device=str(device))
         return move_sae_to_device_dtype(sae, device=device, dtype=dtype)
 
+    if loader_name == "saelens":
+        if not sae_id:
+            raise ValueError("steering.sae_id is required when steering.loader='saelens'.")
+        return _load_saelens_sae(sae_repo=sae_repo, sae_id=sae_id, device=device, dtype=dtype)
+
     raise ValueError(
-        f"Unsupported SAE loader '{loader}'. Expected 'sparsify' or 'dictionary_learning'."
+        f"Unsupported SAE loader '{loader}'. Expected 'sparsify', 'dictionary_learning', or 'saelens'."
     )
 
 
@@ -156,6 +190,7 @@ class SparsifySteerer:
         self.config = config
         self.handle = None
         self.last_feature_stats: dict[str, Any] | None = None
+        self._cached_feature_max_acts: dict[int, float] | None = None
 
         module_path = resolve_module_path(config.hookpoint, config.module_path)
         self.target_module = get_submodule_by_path(self.model, module_path)
@@ -171,6 +206,7 @@ class SparsifySteerer:
             sae_repo=config.sae_repo,
             hookpoint=config.hookpoint,
             sae_file=config.sae_file,
+            sae_id=config.sae_id,
             device=self.sae_device,
             dtype=self.sae_dtype,
         )
@@ -195,6 +231,7 @@ class SparsifySteerer:
 
     def reset(self) -> None:
         self.last_feature_stats = None
+        self._cached_feature_max_acts = None
 
     def _selected_position_mask(self, hidden: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = hidden.shape
@@ -254,24 +291,62 @@ class SparsifySteerer:
                 return self._manual_decode_from_sparse(sparse, dtype=dtype)
             raise
 
+    def _feature_max_acts(self, hidden_2d: torch.Tensor) -> dict[int, float]:
+        if self.config.max_act is not None:
+            shared = float(self.config.max_act)
+            return {int(feature_idx): shared for feature_idx in self.config.feature_indices}
+
+        dense_latents = encode_dense(self.sae, hidden_2d)
+        if dense_latents.ndim == 1:
+            dense_latents = dense_latents.unsqueeze(0)
+
+        feature_max_acts: dict[int, float] = {}
+        for feature_idx in self.config.feature_indices:
+            feature_idx = int(feature_idx)
+            max_val = float(dense_latents[:, feature_idx].max().item())
+            if max_val <= 0 or max_val == float("inf"):
+                max_val = 1.0
+            feature_max_acts[feature_idx] = max_val
+        return feature_max_acts
+
+    def _build_decoder_vector(self, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        if self._cached_feature_max_acts is None:
+            raise RuntimeError("Feature max activations must be computed before decoder-vector steering.")
+
+        decoder = get_decoder_matrix(self.sae).to(device=self.sae_device, dtype=self.sae_dtype)
+        vector = torch.zeros(decoder.shape[-1], device=self.sae_device, dtype=self.sae_dtype)
+        for feature_idx in self.config.feature_indices:
+            feature_idx = int(feature_idx)
+            max_act = float(self._cached_feature_max_acts[feature_idx])
+            vector = vector + decoder[feature_idx] * (max_act * float(self.config.strength))
+        return vector.to(device=device, dtype=dtype)
+
     @torch.inference_mode()
-    def _hook_fn(self, module, inputs, output):
-        hidden = output[0] if isinstance(output, tuple) else output
-        if hidden is None:
-            return output
+    def _hook_decoder_vector(self, hidden: torch.Tensor):
+        original_device = hidden.device
+        original_dtype = hidden.dtype
+        selected_mask = self._selected_position_mask(hidden)
+        if not bool(selected_mask.any()):
+            return None
 
-        if hidden.ndim != 3:
-            raise ValueError(
-                f"Expected hidden states with shape [batch, seq, d_model], got {tuple(hidden.shape)}"
-            )
+        hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.sae_device, dtype=self.sae_dtype)
+        if self._cached_feature_max_acts is None:
+            self._cached_feature_max_acts = self._feature_max_acts(hidden_2d)
 
+        decoder_vector = self._build_decoder_vector(dtype=hidden_2d.dtype, device=hidden_2d.device)
+        updated_hidden = hidden_2d.clone()
+        updated_hidden[selected_mask.to(device=self.sae_device)] += decoder_vector.unsqueeze(0)
+        return updated_hidden.reshape(hidden.shape).to(device=original_device, dtype=original_dtype)
+
+    @torch.inference_mode()
+    def _hook_latent_additive(self, hidden: torch.Tensor):
         original_device = hidden.device
         original_dtype = hidden.dtype
         original_shape = hidden.shape
 
         selected_mask = self._selected_position_mask(hidden)
         if not bool(selected_mask.any()):
-            return output
+            return None
 
         selected_mask_device = selected_mask.to(device=self.sae_device)
         hidden_2d = hidden.reshape(-1, hidden.shape[-1]).to(device=self.sae_device, dtype=self.sae_dtype)
@@ -303,7 +378,7 @@ class SparsifySteerer:
                 }
 
         if self.config.mode != "additive":
-            raise ValueError(f"Unsupported steering mode: {self.config.mode}")
+            raise ValueError(f"Unsupported latent steering mode: {self.config.mode}")
 
         for feature_idx in self.config.feature_indices:
             feature_idx = int(feature_idx)
@@ -358,7 +433,27 @@ class SparsifySteerer:
         updated_hidden = hidden_2d.clone()
         updated_hidden[selected_mask_device] = steered_selected
         recon = updated_hidden.reshape(original_shape).to(device=original_device, dtype=original_dtype)
+        return recon
 
+    @torch.inference_mode()
+    def _hook_fn(self, module, inputs, output):
+        hidden = output[0] if isinstance(output, tuple) else output
+        if hidden is None:
+            return output
+
+        if hidden.ndim != 3:
+            raise ValueError(
+                f"Expected hidden states with shape [batch, seq, d_model], got {tuple(hidden.shape)}"
+            )
+
+        mode = str(self.config.mode).strip().lower().replace("-", "_")
+        if mode == "decoder_vector":
+            recon = self._hook_decoder_vector(hidden)
+        else:
+            recon = self._hook_latent_additive(hidden)
+
+        if recon is None:
+            return output
         if isinstance(output, tuple):
             return (recon,) + output[1:]
         return recon
