@@ -14,6 +14,7 @@ class SteeringConfig:
     # New fields for loader / repo compatibility.
     loader: str = "sparsify"  # "sparsify" or "dictionary_learning"
     sae_file: Optional[str] = None
+    sae_id: Optional[str] = None
     module_path: Optional[str] = None
 
     # Existing steering controls.

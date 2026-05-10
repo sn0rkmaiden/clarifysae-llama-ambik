@@ -61,15 +61,32 @@ def _cleanup_backend(backend) -> None:
             except Exception:
                 pass
             try:
+                if hasattr(backend.steering, 'sae'):
+                    del backend.steering.sae
+            except Exception:
+                pass
+            try:
+                if hasattr(backend.steering, 'target_module'):
+                    del backend.steering.target_module
+            except Exception:
+                pass
+            try:
                 del backend.steering
             except Exception:
                 pass
         try:
-            del backend.model
+            if hasattr(backend, 'model'):
+                del backend.model
         except Exception:
             pass
         try:
-            del backend.tokenizer
+            if hasattr(backend, 'tokenizer'):
+                del backend.tokenizer
+        except Exception:
+            pass
+        try:
+            if hasattr(backend, 'generation_kwargs'):
+                del backend.generation_kwargs
         except Exception:
             pass
     finally:
@@ -77,6 +94,23 @@ def _cleanup_backend(backend) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+
+
+def _backend_cfgs_match(
+    left_model_cfg: dict[str, Any],
+    left_generation_cfg: dict[str, Any],
+    left_prompting_cfg: dict[str, Any],
+    right_model_cfg: dict[str, Any] | None,
+    right_generation_cfg: dict[str, Any] | None,
+    right_prompting_cfg: dict[str, Any] | None,
+) -> bool:
+    return (
+        right_model_cfg is not None
+        and right_generation_cfg is not None
+        and dict(left_model_cfg) == dict(right_model_cfg)
+        and dict(left_generation_cfg) == dict(right_generation_cfg)
+        and dict(left_prompting_cfg or {}) == dict(right_prompting_cfg or {})
+    )
 
 
 def _build_unsteered_backend(
@@ -250,11 +284,38 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
         report_path = None
 
         if config.get('judge_model'):
-            judge_backend = _build_unsteered_backend(
-                config['judge_model'],
-                config['judge_generation'],
+            unload_before_judge = bool(clarq_cfg.get('unload_models_before_judge', False))
+            provider_can_judge = _backend_cfgs_match(
+                config['provider_model'],
+                config['provider_generation'],
+                config.get('provider_prompting', {}),
+                config.get('judge_model'),
+                config.get('judge_generation'),
                 config.get('judge_prompting', {}),
             )
+
+            if unload_before_judge:
+                # Dialogue generation is complete. Free the seeker before judging;
+                # otherwise a one-GPU run tries to hold seeker + provider + judge.
+                _cleanup_backend(seeker_backend)
+                seeker_backend = None
+                seeker_llm = None
+
+            if provider_can_judge:
+                # In the current ClarQ configs provider and judge are often the
+                # same model. Reuse it instead of loading another 8B copy.
+                judge_backend = provider_backend
+            else:
+                if unload_before_judge:
+                    _cleanup_backend(provider_backend)
+                    provider_backend = None
+                    provider_llm = None
+                judge_backend = _build_unsteered_backend(
+                    config['judge_model'],
+                    config['judge_generation'],
+                    config.get('judge_prompting', {}),
+                )
+
             judge_llm = BackendLLMAdapter(judge_backend)
             metrics = compute_metrics_for_payload(payload, judge_llm, eval_indices)
             metrics_df, summary_df = metrics_to_dataframes(metrics)
@@ -262,6 +323,10 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             summary_path = run_dir / 'tables' / f'{artifact_basename}__clarq_summary.csv'
             write_csv(metrics_path, metrics_df)
             write_csv(summary_path, summary_df)
+
+            if provider_can_judge:
+                # Avoid double-cleaning the same backend object in the finally block.
+                judge_backend = None
 
         if bool(clarq_cfg.get('write_html_report', True)):
             report_path = run_dir / 'report' / f'{artifact_basename}__clarq_report.html'

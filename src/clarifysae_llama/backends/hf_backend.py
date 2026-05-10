@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
@@ -70,14 +70,45 @@ class HFCausalBackend:
             model_kwargs['device_map'] = model_cfg['device_map']
         if model_cfg.get('attn_implementation', None) is not None:
             model_kwargs['attn_implementation'] = model_cfg['attn_implementation']
+        if model_cfg.get('low_cpu_mem_usage', None) is not None:
+            model_kwargs['low_cpu_mem_usage'] = bool(model_cfg['low_cpu_mem_usage'])
+        if model_cfg.get('max_memory', None) is not None:
+            model_kwargs['max_memory'] = model_cfg['max_memory']
+        if model_cfg.get('offload_folder', None) is not None:
+            model_kwargs['offload_folder'] = model_cfg['offload_folder']
+
+        if bool(model_cfg.get('load_in_4bit', False)):
+            model_kwargs['quantization_config'] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=self.dtype,
+                bnb_4bit_quant_type=model_cfg.get('bnb_4bit_quant_type', 'nf4'),
+                bnb_4bit_use_double_quant=bool(model_cfg.get('bnb_4bit_use_double_quant', True)),
+            )
+        elif bool(model_cfg.get('load_in_8bit', False)):
+            model_kwargs['quantization_config'] = BitsAndBytesConfig(load_in_8bit=True)
 
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
         self.model.eval()
 
         self.generation_kwargs = normalize_generation_kwargs(generation_cfg, self.tokenizer)
 
+    def _model_input_device(self) -> torch.device:
+        # With device_map='auto' some parameters may be meta/CPU-offloaded. The
+        # embedding weight's concrete device is a better target for input IDs.
+        try:
+            embed = self.model.get_input_embeddings()
+            if embed is not None and hasattr(embed, 'weight') and embed.weight.device.type != 'meta':
+                return embed.weight.device
+        except Exception:
+            pass
+
+        for parameter in self.model.parameters():
+            if parameter.device.type != 'meta':
+                return parameter.device
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     def _inputs_to_model_device(self, tokenized):
-        model_device = next(self.model.parameters()).device
+        model_device = self._model_input_device()
         return {k: v.to(model_device) for k, v in tokenized.items()}
 
     def _should_use_chat_template(self) -> bool:

@@ -202,10 +202,11 @@ class BackendLLMAdapter:
         if chat_messages is not None and hasattr(self.backend, 'generate_messages'):
             response = self.backend.generate_messages(chat_messages)
         else:
-            try:
-                response = self.backend.generate(prompt_text, stop=stop)
-            except TypeError:
-                response = self.backend.generate(prompt_text)
+            # The in-repo HF backend does not implement provider-side stopping;
+            # this adapter applies stop strings after generation below. Do not
+            # pass legacy kwargs here, because catching TypeError hides real
+            # generation bugs and adds overhead on every call.
+            response = self.backend.generate(prompt_text)
 
         response = "" if response is None else str(response)
         response = self._apply_stop(response, stop)
