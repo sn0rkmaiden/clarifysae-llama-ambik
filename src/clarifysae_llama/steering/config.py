@@ -25,3 +25,4 @@ class SteeringConfig:
     preserve_unsteered_residual: bool = False
     clamp_latents: Optional[float] = None
     log_feature_acts: bool = False
+    max_act: Optional[float] = None
