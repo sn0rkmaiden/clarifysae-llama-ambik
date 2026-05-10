@@ -23,6 +23,6 @@ sweep:
     keep_aggregate_metrics: true
     keep_clarq_metrics: true
     keep_clarq_summary: true
-    keep_clarq_report: false
+    keep_clarq_report: true
     keep_clarq_feature_dashboards: true
     cleanup_tmp_run_dirs: true
