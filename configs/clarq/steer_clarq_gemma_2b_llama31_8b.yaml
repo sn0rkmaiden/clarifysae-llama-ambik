@@ -21,7 +21,7 @@ prompting:
 steering:
   enabled: true
   loader: saelens
-  sae_repo: neuronpedia/gemma-2b-it__res-jb
+  sae_repo: gemma-2b-it__res-jb
   sae_id: blocks.12.hook_resid_post
   hookpoint: blocks.12.hook_resid_post
   module_path: model.layers.12
