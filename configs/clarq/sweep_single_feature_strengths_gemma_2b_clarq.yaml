@@ -3,7 +3,7 @@ base_config: configs/clarq/gemma_2b_clarq_sweep_base.yaml
 
 sweep:
   mode: single_feature_strength
-  strengths: [1.0, 3.0, 5.0, 10.0]
+  strengths: [-10.0, -5.0, -3.0, -1.0, 1.0, 3.0, 5.0, 10.0]
   groups:
     - vocab: C
       hookpoint: blocks.12.hook_resid_post
@@ -14,7 +14,7 @@ sweep:
       hookpoint: blocks.12.hook_resid_post
       module_path: model.layers.12
       sae_id: blocks.12.hook_resid_post
-      features: [231, 375, 538, 557, 700, 791]
+      features: [231, 375, 538, 557, 688, 700, 791]
   storage:
     layout: flat
     keep_generated_configs: false
