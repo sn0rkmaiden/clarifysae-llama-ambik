@@ -7,6 +7,9 @@ model:
   torch_dtype: bfloat16
   device_map: auto
   attn_implementation: null
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
 
 generation:
   max_new_tokens: 96
@@ -46,6 +49,9 @@ provider_model:
   torch_dtype: bfloat16
   device_map: auto
   attn_implementation: null
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
 
 provider_generation:
   max_new_tokens: 128
@@ -79,6 +85,7 @@ clarq:
   multi_info_provider_agent: false
   max_turns_cap: 22
   write_html_report: true
+  unload_models_before_judge: true
 
 console:
   show_progress: true
