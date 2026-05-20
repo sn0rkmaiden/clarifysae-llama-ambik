@@ -1,0 +1,1200 @@
+diff --git a/README.md b/README.md
+index b2bef4f..46183e8 100644
+--- a/README.md
++++ b/README.md
+@@ -179,6 +179,71 @@ python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_fea
+ python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_feature_strengths_clarq_many.yaml
+ ```
+ 
++### ClarQ multi-feature steering sweeps
++
++Multi-feature ClarQ sweeps use the same decoder-vector combination rule as the old AmbiK Gemma code:
++
++```text
++combined = sum(max_act_j * weight_j * W_dec[j] for j in features)
++hidden = hidden + strength * combined
++```
++
++The exact old AmbiK cluster memberships are now recovered from the old `SAE-Reasoning` repo, specifically the `extraction/clusters/*/features_clustered.csv` files. These configs rerun the same cluster feature sets on ClarQ-LLM with the same old combined-decoder steering rule and strengths `[1, 3, 5, 10]`:
++
++```bash
++python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_clusters_gemma_2b_clarq.yaml
++python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_clusters_gemma2_9b_clarq.yaml
++```
++
++There is also a config for the older hand-combined Gemma-9B feature sets whose IDs were recoverable directly from filenames such as `ambik_9b_many_229_480_748_multi3_str0.8.json`:
++
++```bash
++python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_many_gemma2_9b_clarq.yaml
++```
++
++A multi-feature group looks like this:
++
++```yaml
++sweep:
++  mode: multi_feature_strength
++  strengths: [0.8, 1.5]
++  groups:
++    - vocab: old_many
++      hookpoint: blocks.20.hook_resid_post
++      module_path: model.layers.20
++      sae_id: layer_20/width_16k/average_l0_91
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_9b_many_229_480_748
++          features: [229, 480, 748]
++```
++
++Optional per-set fields:
++- `weights`: list of per-feature weights matching `features`
++- `normalize_each: true`: normalize each decoder direction before summing
++- `norm_cap`: cap the norm of the summed steering vector before applying `strength`, matching the old helper
++
++To derive new clustered feature sets from decoder-direction similarity, use:
++
++```bash
++python scripts/build_decoder_similarity_feature_sets.py \
++  --features "344,383,565,591,688,771" \
++  --loader saelens \
++  --sae_repo gemma-scope-9b-it-res \
++  --sae_id layer_20/width_16k/average_l0_91 \
++  --hookpoint blocks.20.hook_resid_post \
++  --threshold 0.60 \
++  --out_yaml outputs/feature_sets/gemma9b_C_l20_thr06.yaml
++```
++
++For ClarQ sweeps, the key output files are:
++- `outputs/sweeps/<sweep_name>/manifest.csv`
++- `outputs/sweeps/<sweep_name>/clarq_summary.csv`
++- `outputs/sweeps/<sweep_name>/clarq_metrics.csv`
++- `outputs/sweeps/<sweep_name>/clarq_feature_dashboards.html`
++- `outputs/sweeps/<sweep_name>/reports/*.html`
++
+ Notes:
+ - the ClarQ runner currently assumes the old **Comp / pure prompt** setup, which is
+   the closest match to your previous Gemma runs
+diff --git a/configs/clarq/sweep_old_ambik_clusters_gemma2_9b_clarq.yaml b/configs/clarq/sweep_old_ambik_clusters_gemma2_9b_clarq.yaml
+new file mode 100644
+index 0000000..a8f8c6e
+--- /dev/null
++++ b/configs/clarq/sweep_old_ambik_clusters_gemma2_9b_clarq.yaml
+@@ -0,0 +1,60 @@
++experiment_name: gemma2_9b_old_ambik_cluster_strength_sweep_clarq
++base_config: configs/clarq/gemma2_9b_clarq_sweep_base.yaml
++
++# Exact old AmbiK cluster-steering sets recovered from
++# SAE-Reasoning/extraction/clusters/*/features_clustered.csv.
++# Each feature set is the same top-N cluster membership used by old result filenames
++# such as ambik_cluster_9b_allvocabs_l20_thr0.6_nclust3_cluster2_multi10_str5.0.json.
++# These are the clusters reported in the AmbiK multi-feature table.
++
++sweep:
++  mode: multi_feature_strength
++  strengths: [1.0, 3.0, 5.0, 10.0]
++  groups:
++    - vocab: old_ambik_clusters_l09
++      hookpoint: blocks.9.hook_resid_post
++      module_path: model.layers.9
++      sae_repo: gemma-scope-9b-it-res-canonical
++      sae_id: layer_9/width_16k/canonical
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_cluster_9b_allvocabs_l09_thr0.6_nclust3_cluster0_multi10
++          features: [81, 249, 642, 9, 165, 227, 198, 526, 597, 417]
++        - label: ambik_cluster_9b_allvocabs_l09_thr0.6_nclust3_cluster1_multi10
++          features: [512, 199, 92, 643, 251, 561, 529, 125, 131, 432]
++        - label: ambik_cluster_9b_allvocabs_l09_thr0.6_nclust3_cluster2_multi3
++          features: [785, 509, 354]
++        - label: ambik_cluster_9b_allvocabs_l09_thr0.6_nclust5_cluster4_multi10
++          features: [526, 400, 406, 622, 804, 636, 398, 549, 550, 695]
++
++    - vocab: old_ambik_clusters_l20
++      hookpoint: blocks.20.hook_resid_post
++      module_path: model.layers.20
++      sae_repo: gemma-scope-9b-it-res-canonical
++      sae_id: layer_20/width_16k/canonical
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_cluster_9b_allvocabs_l20_thr0.6_nclust3_cluster2_multi10
++          features: [711, 229, 565, 113, 322, 152, 584, 666, 182, 376]
++
++    - vocab: old_ambik_clusters_l31
++      hookpoint: blocks.31.hook_resid_post
++      module_path: model.layers.31
++      sae_repo: gemma-scope-9b-it-res-canonical
++      sae_id: layer_31/width_16k/canonical
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_cluster_9b_allvocabs_l31_thr0.6_nclust3_cluster1_multi10
++          features: [264, 118, 158, 438, 93, 302, 121, 245, 124, 208]
++  storage:
++    layout: flat
++    keep_generated_configs: false
++    keep_results: true
++    keep_clarq_metrics: true
++    keep_clarq_summary: true
++    keep_clarq_report: true
++    keep_clarq_feature_dashboards: true
++    cleanup_tmp_run_dirs: true
+diff --git a/configs/clarq/sweep_old_ambik_clusters_gemma_2b_clarq.yaml b/configs/clarq/sweep_old_ambik_clusters_gemma_2b_clarq.yaml
+new file mode 100644
+index 0000000..ce232bb
+--- /dev/null
++++ b/configs/clarq/sweep_old_ambik_clusters_gemma_2b_clarq.yaml
+@@ -0,0 +1,36 @@
++experiment_name: gemma_2b_old_ambik_cluster_strength_sweep_clarq
++base_config: configs/clarq/gemma_2b_clarq_sweep_base.yaml
++
++# Exact old AmbiK cluster-steering sets recovered from
++# SAE-Reasoning/extraction/clusters/2b_allvocabs_l12_thr0.6_nclust3/features_clustered.csv.
++# Each feature set is the top-N features in that old cluster, ranked by output_score_agg,
++# matching old result filenames such as
++# ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster0_multi10_str1.0.json.
++
++sweep:
++  mode: multi_feature_strength
++  strengths: [1.0, 3.0, 5.0, 10.0]
++  groups:
++    - vocab: old_ambik_clusters
++      hookpoint: blocks.12.hook_resid_post
++      module_path: model.layers.12
++      sae_repo: gemma-2b-it-res-jb
++      sae_id: blocks.12.hook_resid_post
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster0_multi10
++          features: [557, 320, 439, 375, 700, 688, 261, 791, 165, 210]
++        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster1_multi10
++          features: [492, 505, 103, 231, 811, 336, 132, 79, 744, 379]
++        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster2_multi10
++          features: [432, 538, 802, 724, 709, 555, 285, 451, 621, 80]
++  storage:
++    layout: flat
++    keep_generated_configs: false
++    keep_results: true
++    keep_clarq_metrics: true
++    keep_clarq_summary: true
++    keep_clarq_report: true
++    keep_clarq_feature_dashboards: true
++    cleanup_tmp_run_dirs: true
+diff --git a/configs/clarq/sweep_old_ambik_many_gemma2_9b_clarq.yaml b/configs/clarq/sweep_old_ambik_many_gemma2_9b_clarq.yaml
+new file mode 100644
+index 0000000..6a24152
+--- /dev/null
++++ b/configs/clarq/sweep_old_ambik_many_gemma2_9b_clarq.yaml
+@@ -0,0 +1,45 @@
++experiment_name: gemma2_9b_old_ambik_many_feature_strength_sweep_clarq
++base_config: configs/clarq/gemma2_9b_clarq_sweep_base.yaml
++
++# These are the old multi-feature Gemma-9B combinations whose feature ids are
++# recoverable from old repo result filenames such as
++# ambik_9b_many_229_480_748_multi3_str0.8.json.
++# They are NOT the hidden `ambik_cluster_*` groups, because the uploaded old
++# result JSONs do not store those clusters' feature memberships.
++
++sweep:
++  mode: multi_feature_strength
++  strengths: [0.8, 1.5]
++  groups:
++    - vocab: old_many
++      hookpoint: blocks.20.hook_resid_post
++      module_path: model.layers.20
++      sae_id: layer_20/width_16k/average_l0_91
++      normalize_each: false
++      norm_cap: null
++      feature_sets:
++        - label: ambik_9b_many_229_480_748
++          features: [229, 480, 748]
++        - label: ambik_9b_many_229_480
++          features: [229, 480]
++        - label: ambik_9b_many_229_488_113
++          features: [229, 488, 113]
++        - label: ambik_9b_many_229_488_480
++          features: [229, 488, 480]
++        - label: ambik_9b_many_229_488
++          features: [229, 488]
++        - label: ambik_9b_many_771_383
++          features: [771, 383]
++        - label: ambik_9b_many_771_711_318
++          features: [771, 711, 318]
++        - label: ambik_9b_many_771_711
++          features: [771, 711]
++  storage:
++    layout: flat
++    keep_generated_configs: false
++    keep_results: true
++    keep_clarq_metrics: true
++    keep_clarq_summary: true
++    keep_clarq_report: true
++    keep_clarq_feature_dashboards: true
++    cleanup_tmp_run_dirs: true
+diff --git a/scripts/build_decoder_similarity_feature_sets.py b/scripts/build_decoder_similarity_feature_sets.py
+new file mode 100644
+index 0000000..8d08977
+--- /dev/null
++++ b/scripts/build_decoder_similarity_feature_sets.py
+@@ -0,0 +1,149 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import argparse
++import json
++import re
++from pathlib import Path
++from typing import Any
++
++import torch
++import yaml
++
++from clarifysae_llama.discovery.sae_utils import get_decoder_matrix
++from clarifysae_llama.steering.sparsify_steerer import load_sae, move_sae_to_device_dtype
++
++
++def _parse_features(raw: str) -> list[int]:
++    path = Path(raw)
++    if path.exists():
++        if path.suffix.lower() == '.json':
++            data = json.loads(path.read_text(encoding='utf-8'))
++            if isinstance(data, dict):
++                if 'features' in data:
++                    data = data['features']
++                else:
++                    data = list(data.keys())
++            return [int(x) for x in data]
++        text = path.read_text(encoding='utf-8')
++    else:
++        text = raw
++    return [int(m.group(0)) for m in re.finditer(r'-?\d+', text)]
++
++
++def _dtype(name: str) -> torch.dtype:
++    name = name.lower()
++    if name in {'float32', 'fp32'}:
++        return torch.float32
++    if name in {'float16', 'fp16'}:
++        return torch.float16
++    if name in {'bfloat16', 'bf16'}:
++        return torch.bfloat16
++    raise ValueError(f'Unsupported dtype: {name}')
++
++
++def _connected_components(sim: torch.Tensor, features: list[int], threshold: float) -> list[list[int]]:
++    n = len(features)
++    seen = [False] * n
++    clusters: list[list[int]] = []
++    adjacency = sim >= float(threshold)
++    adjacency.fill_diagonal_(True)
++
++    for start in range(n):
++        if seen[start]:
++            continue
++        stack = [start]
++        seen[start] = True
++        component: list[int] = []
++        while stack:
++            current = stack.pop()
++            component.append(features[current])
++            neighbors = adjacency[current].nonzero(as_tuple=False).flatten().tolist()
++            for nb in neighbors:
++                if not seen[nb]:
++                    seen[nb] = True
++                    stack.append(nb)
++        clusters.append(sorted(component))
++    return sorted(clusters, key=lambda xs: (-len(xs), xs[0]))
++
++
++def _write_yaml_snippet(path: Path, clusters: list[list[int]], label_prefix: str) -> None:
++    feature_sets = [
++        {'label': f'{label_prefix}{idx}', 'features': cluster}
++        for idx, cluster in enumerate(clusters)
++    ]
++    payload = {'feature_sets': feature_sets}
++    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding='utf-8')
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(
++        description='Build ClarQ multi-feature sweep feature_sets by clustering SAE decoder directions.'
++    )
++    parser.add_argument('--features', required=True, help='Comma/space-separated feature ids or a txt/json file.')
++    parser.add_argument('--threshold', type=float, default=0.60, help='Cosine similarity threshold for connected components.')
++    parser.add_argument('--min_size', type=int, default=2, help='Drop clusters smaller than this size.')
++    parser.add_argument('--label_prefix', default='cluster')
++    parser.add_argument('--out_yaml', required=True)
++    parser.add_argument('--out_json', default=None)
++
++    parser.add_argument('--loader', default='saelens', choices=['sparsify', 'dictionary_learning', 'saelens'])
++    parser.add_argument('--sae_repo', required=True)
++    parser.add_argument('--hookpoint', required=True)
++    parser.add_argument('--sae_file', default=None)
++    parser.add_argument('--sae_id', default=None)
++    parser.add_argument('--device', default='cpu')
++    parser.add_argument('--dtype', default='float32')
++    args = parser.parse_args()
++
++    features = sorted(set(_parse_features(args.features)))
++    if not features:
++        raise ValueError('No features were parsed from --features.')
++
++    device = torch.device(args.device)
++    dtype = _dtype(args.dtype)
++    sae = load_sae(
++        loader=args.loader,
++        sae_repo=args.sae_repo,
++        hookpoint=args.hookpoint,
++        sae_file=args.sae_file,
++        sae_id=args.sae_id,
++        device=device,
++        dtype=dtype,
++    )
++    sae = move_sae_to_device_dtype(sae, device=device, dtype=dtype)
++    decoder = get_decoder_matrix(sae).to(device=device, dtype=torch.float32)
++
++    if max(features) >= decoder.shape[0] or min(features) < 0:
++        raise ValueError(f'Feature id out of bounds for decoder with {decoder.shape[0]} rows.')
++
++    vectors = decoder[torch.tensor(features, device=device, dtype=torch.long)]
++    vectors = vectors / vectors.norm(dim=-1, keepdim=True).clamp_min(1e-8)
++    sim = vectors @ vectors.T
++
++    clusters = _connected_components(sim.detach().cpu(), features, args.threshold)
++    clusters = [cluster for cluster in clusters if len(cluster) >= int(args.min_size)]
++    if not clusters:
++        raise ValueError('No clusters passed min_size. Lower --threshold or --min_size.')
++
++    out_yaml = Path(args.out_yaml)
++    out_yaml.parent.mkdir(parents=True, exist_ok=True)
++    _write_yaml_snippet(out_yaml, clusters, args.label_prefix)
++
++    if args.out_json:
++        out_json = Path(args.out_json)
++        out_json.parent.mkdir(parents=True, exist_ok=True)
++        payload: dict[str, Any] = {
++            'threshold': args.threshold,
++            'min_size': args.min_size,
++            'features': features,
++            'clusters': clusters,
++            'similarity': sim.detach().cpu().tolist(),
++        }
++        out_json.write_text(json.dumps(payload, indent=2), encoding='utf-8')
++
++    print(f'Wrote {len(clusters)} feature sets to {out_yaml}')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/src/clarifysae_llama/backends/steered_hf_backend.py b/src/clarifysae_llama/backends/steered_hf_backend.py
+index 5adf9ab..63c1a8c 100644
+--- a/src/clarifysae_llama/backends/steered_hf_backend.py
++++ b/src/clarifysae_llama/backends/steered_hf_backend.py
+@@ -33,7 +33,10 @@ class SteeredHFCausalBackend(HFCausalBackend):
+                 preserve_unsteered_residual=runtime_cfg.get("preserve_unsteered_residual", False),
+                 clamp_latents=runtime_cfg.get("clamp_latents"),
+                 log_feature_acts=runtime_cfg.get("log_feature_acts", False),
+-                max_act=runtime_cfg.get("max_act"),
++                max_act=steering_cfg.get("max_act", runtime_cfg.get("max_act")),
++                feature_weights=steering_cfg.get("feature_weights"),
++                normalize_each=bool(steering_cfg.get("normalize_each", runtime_cfg.get("normalize_each", False))),
++                norm_cap=steering_cfg.get("norm_cap", runtime_cfg.get("norm_cap")),
+             ),
+         )
+ 
+diff --git a/src/clarifysae_llama/eval/clarq_metrics.py b/src/clarifysae_llama/eval/clarq_metrics.py
+index 9a5e05f..d22c22f 100644
+--- a/src/clarifysae_llama/eval/clarq_metrics.py
++++ b/src/clarifysae_llama/eval/clarq_metrics.py
+@@ -213,6 +213,9 @@ def _compute_dialogue_row(
+         'language': meta.get('language'),
+         'evaluation_set': meta.get('evaluation_set_arg') or meta.get('evaluation_set'),
+         'steering_feature': (meta.get('steering') or {}).get('feature'),
++        'steering_features': (meta.get('steering') or {}).get('feature_indices'),
++        'steering_feature_set_label': (meta.get('steering') or {}).get('feature_set_label'),
++        'steering_feature_count': (meta.get('steering') or {}).get('feature_count'),
+         'steering_strength': (meta.get('steering') or {}).get('strength'),
+ 
+         # dialogue identifiers
+@@ -279,6 +282,9 @@ def compute_metrics_for_payload(
+         'language': meta.get('language'),
+         'evaluation_set': meta.get('evaluation_set_arg') or meta.get('evaluation_set'),
+         'steering_feature': (meta.get('steering') or {}).get('feature'),
++        'steering_features': (meta.get('steering') or {}).get('feature_indices'),
++        'steering_feature_set_label': (meta.get('steering') or {}).get('feature_set_label'),
++        'steering_feature_count': (meta.get('steering') or {}).get('feature_count'),
+         'steering_strength': (meta.get('steering') or {}).get('strength'),
+         'num_dialogues': denom,
+         'success_rate': sum(r['success'] for r in rows) / denom,
+@@ -316,6 +322,9 @@ def metrics_to_dataframes(metrics: dict[str, Any]) -> tuple[pd.DataFrame, pd.Dat
+         'ClarQ_len',
+         'num_dialogues',
+         'steering_feature',
++        'steering_features',
++        'steering_feature_set_label',
++        'steering_feature_count',
+         'steering_strength',
+         'language',
+         'evaluation_set',
+diff --git a/src/clarifysae_llama/runners/run_clarq_eval.py b/src/clarifysae_llama/runners/run_clarq_eval.py
+index dae68de..0ab14d2 100644
+--- a/src/clarifysae_llama/runners/run_clarq_eval.py
++++ b/src/clarifysae_llama/runners/run_clarq_eval.py
+@@ -135,6 +135,34 @@ def _build_seeker_backend(config: dict[str, Any]):
+ 
+ 
+ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dict[str, Any]:
++    steering_cfg = config.get('steering') or {}
++    steering_enabled = bool(steering_cfg.get('enabled', False))
++    feature_indices = [int(x) for x in steering_cfg.get('feature_indices', [])] if steering_enabled else []
++    run_metadata = config.get('run_metadata') or {}
++
++    steering_meta = None
++    if steering_enabled:
++        steering_meta = {
++            # Backwards-compatible scalar field used by older ClarQ tables.
++            'feature': feature_indices[0] if len(feature_indices) == 1 else None,
++            # New multi-feature fields.
++            'feature_indices': feature_indices,
++            'feature_count': len(feature_indices),
++            'feature_set_label': run_metadata.get('feature_set_label'),
++            'feature_weights': steering_cfg.get('feature_weights'),
++            'normalize_each': steering_cfg.get('normalize_each'),
++            'norm_cap': steering_cfg.get('norm_cap'),
++            'strength': steering_cfg.get('strength'),
++            'hookpoint': steering_cfg.get('hookpoint'),
++            'module_path': steering_cfg.get('module_path'),
++            'loader': steering_cfg.get('loader'),
++            'sae_repo': steering_cfg.get('sae_repo'),
++            'sae_file': steering_cfg.get('sae_file'),
++            'sae_id': steering_cfg.get('sae_id'),
++            'mode': steering_cfg.get('mode'),
++            'max_act': (steering_cfg.get('runtime') or {}).get('max_act'),
++        }
++
+     return {
+         'task_data_path': clarq_cfg['dataset_path'],
+         'language': 'En' if 'English' in clarq_cfg['dataset_path'] else 'Ch',
+@@ -144,20 +172,7 @@ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dic
+         'seeker_agent_llm': config['model']['name'],
+         'provider_agent_llm': config['provider_model']['name'],
+         'multi_info_provider_agent': bool(clarq_cfg.get('multi_info_provider_agent', False)),
+-        'steering': {
+-            'feature': (config.get('steering') or {}).get('feature_indices', [None])[0],
+-            'strength': (config.get('steering') or {}).get('strength'),
+-            'hookpoint': (config.get('steering') or {}).get('hookpoint'),
+-            'module_path': (config.get('steering') or {}).get('module_path'),
+-            'loader': (config.get('steering') or {}).get('loader'),
+-            'sae_repo': (config.get('steering') or {}).get('sae_repo'),
+-            'sae_file': (config.get('steering') or {}).get('sae_file'),
+-            'sae_id': (config.get('steering') or {}).get('sae_id'),
+-            'mode': (config.get('steering') or {}).get('mode'),
+-            'max_act': ((config.get('steering') or {}).get('runtime') or {}).get('max_act'),
+-        }
+-        if config.get('steering', {}).get('enabled', False)
+-        else None,
++        'steering': steering_meta,
+         'judge_model': (config.get('judge_model') or {}).get('name'),
+     }
+ 
+diff --git a/src/clarifysae_llama/runners/sweep.py b/src/clarifysae_llama/runners/sweep.py
+index 5ae4553..7581141 100644
+--- a/src/clarifysae_llama/runners/sweep.py
++++ b/src/clarifysae_llama/runners/sweep.py
+@@ -38,6 +38,7 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
+     'hookpoint',
+     'module_path',
+     'sae_file',
++    'sae_repo',
+     'sae_id',
+     'feature_index',
+     'strength',
+@@ -55,6 +56,7 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
+     'hookpoint',
+     'module_path',
+     'sae_file',
++    'sae_repo',
+     'sae_id',
+     'feature_index',
+     'strength',
+@@ -65,9 +67,34 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
+     'report_path',
+ ]
+ 
++CLARQ_MULTI_FEATURE_MANIFEST_COLUMNS = [
++    'run_name',
++    'vocab',
++    'hookpoint',
++    'module_path',
++    'sae_file',
++    'sae_repo',
++    'sae_id',
++    'feature_set_label',
++    'feature_indices',
++    'feature_count',
++    'feature_weights',
++    'normalize_each',
++    'norm_cap',
++    'strength',
++    'config_path',
++    'results_path',
++    'metrics_path',
++    'summary_path',
++    'report_path',
++]
++
+ CLARQ_COMPACT_SUMMARY_COLUMNS = [
+     'run_name',
+     'feature_index',
++    'feature_set_label',
++    'feature_indices',
++    'feature_count',
+     'strength',
+     'success_rate',
+     'step_recall',
+@@ -129,6 +156,87 @@ def _build_single_feature_run_name(
+     return '__'.join(parts)
+ 
+ 
++def _features_token(feature_indices: list[int], *, max_items: int = 6) -> str:
++    values = [str(int(x)) for x in feature_indices]
++    if len(values) > max_items:
++        digest = hashlib.md5(','.join(values).encode('utf-8')).hexdigest()[:8]
++        shown = '-'.join(values[:max_items])
++        return f'{shown}-plus{len(values) - max_items}-{digest}'
++    return '-'.join(values)
++
++
++def _feature_set_label(feature_set: dict[str, Any], set_index: int) -> str:
++    for key in ('label', 'name', 'cluster_label'):
++        if feature_set.get(key) not in (None, ''):
++            return str(feature_set[key])
++    if feature_set.get('cluster_id') not in (None, ''):
++        return f"cluster{feature_set['cluster_id']}"
++    if feature_set.get('cluster') not in (None, ''):
++        return f"cluster{feature_set['cluster']}"
++    return f'set{set_index}'
++
++
++def _normalize_feature_set_entry(raw_entry: Any, set_index: int) -> dict[str, Any]:
++    if isinstance(raw_entry, dict):
++        entry = dict(raw_entry)
++    elif isinstance(raw_entry, list):
++        entry = {'features': raw_entry}
++    else:
++        raise ValueError(
++            'Each feature set must be either a mapping with a features list or a bare list of feature ids. '
++            f'Got {type(raw_entry)!r} at index {set_index}.'
++        )
++
++    if 'features' not in entry:
++        raise ValueError(f'feature_sets[{set_index}] is missing features.')
++    if not isinstance(entry['features'], list) or not entry['features']:
++        raise ValueError(f'feature_sets[{set_index}].features must be a non-empty list.')
++    entry['features'] = [int(x) for x in entry['features']]
++    entry['label'] = _feature_set_label(entry, set_index)
++
++    if entry.get('weights') is not None:
++        if not isinstance(entry['weights'], list) or len(entry['weights']) != len(entry['features']):
++            raise ValueError(
++                f"feature_sets[{set_index}].weights must be a list with the same length as features "
++                f"({len(entry.get('weights') or [])} != {len(entry['features'])})."
++            )
++        entry['weights'] = [float(x) for x in entry['weights']]
++    return entry
++
++
++def _feature_sets_from_group(group: dict[str, Any]) -> list[dict[str, Any]]:
++    raw_sets = group.get('feature_sets')
++    if raw_sets is None:
++        raw_sets = group.get('clusters')
++    if raw_sets is None:
++        # Convenience: a group-level features list becomes one combined feature set.
++        raw_sets = [{'label': group.get('label', 'combined'), 'features': group.get('features')}]
++    if not isinstance(raw_sets, list) or not raw_sets:
++        raise ValueError('multi_feature_strength groups require a non-empty feature_sets list.')
++    return [_normalize_feature_set_entry(entry, idx) for idx, entry in enumerate(raw_sets)]
++
++
++def _build_feature_set_run_name(
++    experiment_prefix: str,
++    vocab: str | None,
++    hookpoint: str,
++    feature_set_label: str,
++    feature_indices: list[int],
++    strength: Any,
++) -> str:
++    parts = [experiment_prefix]
++    if vocab:
++        parts.append(_sanitize_token(vocab))
++    parts.extend([
++        _short_hookpoint(hookpoint),
++        _sanitize_token(feature_set_label),
++        f'multi{len(feature_indices)}',
++        f'feats{_sanitize_token(_features_token(feature_indices))}',
++        f'str{_sanitize_token(strength)}',
++    ])
++    return '__'.join(parts)
++
++
+ def _storage_defaults() -> dict[str, Any]:
+     return {
+         'layout': 'flat',
+@@ -205,8 +313,34 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
+             raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
+         if 'sae_file' in group and not isinstance(group['sae_file'], str):
+             raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
++        if 'sae_repo' in group and not isinstance(group['sae_repo'], str):
++            raise ValueError(f'sweep.groups[{group_idx}].sae_repo must be a string if provided.')
++        if 'sae_id' in group and not isinstance(group['sae_id'], str):
++            raise ValueError(f'sweep.groups[{group_idx}].sae_id must be a string if provided.')
++
++
++def _validate_multi_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
++    sweep_section = sweep_cfg.get('sweep', {})
++    strengths = sweep_section.get('strengths')
++    groups = sweep_section.get('groups')
++
++    if not isinstance(strengths, list) or not strengths:
++        raise ValueError('multi_feature_strength sweep requires a non-empty sweep.strengths list.')
++    if not isinstance(groups, list) or not groups:
++        raise ValueError('multi_feature_strength sweep requires a non-empty sweep.groups list.')
++
++    for group_idx, group in enumerate(groups):
++        if 'hookpoint' not in group:
++            raise ValueError(f'sweep.groups[{group_idx}] is missing hookpoint.')
++        if 'module_path' in group and not isinstance(group['module_path'], str):
++            raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
++        if 'sae_file' in group and not isinstance(group['sae_file'], str):
++            raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
++        if 'sae_repo' in group and not isinstance(group['sae_repo'], str):
++            raise ValueError(f'sweep.groups[{group_idx}].sae_repo must be a string if provided.')
+         if 'sae_id' in group and not isinstance(group['sae_id'], str):
+             raise ValueError(f'sweep.groups[{group_idx}].sae_id must be a string if provided.')
++        _feature_sets_from_group(group)
+ 
+ 
+ def _emit_run_start(
+@@ -216,7 +350,9 @@ def _emit_run_start(
+     run_name: str,
+     vocab: str | None = None,
+     hookpoint: str | None = None,
+-    feature_index: int | None = None,
++    feature_index: int | str | None = None,
++    feature_indices: list[int] | None = None,
++    feature_set_label: str | None = None,
+     strength: Any | None = None,
+     config_path: Path | None = None,
+ ) -> None:
+@@ -228,6 +364,10 @@ def _emit_run_start(
+         details.append(f'hookpoint={hookpoint}')
+     if feature_index is not None:
+         details.append(f'feature={feature_index}')
++    if feature_set_label is not None:
++        details.append(f'feature_set={feature_set_label}')
++    if feature_indices is not None:
++        details.append(f'features={feature_indices}')
+     if strength is not None:
+         details.append(f'strength={strength}')
+     if details:
+@@ -358,7 +498,8 @@ def _feature_group_key(row: dict[str, Any]) -> tuple[Any, ...]:
+         row.get('module_path'),
+         row.get('sae_file'),
+         row.get('sae_id'),
+-        row.get('feature_index'),
++        row.get('feature_set_label') or row.get('feature_index'),
++        str(row.get('feature_indices') or ''),
+     )
+ 
+ 
+@@ -366,7 +507,8 @@ def _feature_dashboard_filename(row: dict[str, Any]) -> str:
+     parts = []
+     if row.get('vocab') not in (None, ''):
+         parts.append(_sanitize_token(row['vocab']))
+-    parts.extend([_short_hookpoint(str(row.get('hookpoint', 'hook'))), f"feat{_sanitize_token(row.get('feature_index', 'na'))}"])
++    feature_label = row.get('feature_set_label') or row.get('feature_index', 'na')
++    parts.extend([_short_hookpoint(str(row.get('hookpoint', 'hook'))), f"feat{_sanitize_token(feature_label)}"])
+     digest = hashlib.md5(repr(_feature_group_key(row)).encode('utf-8')).hexdigest()[:8]
+     parts.append(digest)
+     return '__'.join(parts) + '.html'
+@@ -490,7 +632,10 @@ def _build_clarq_feature_dashboard_html(
+         )
+ 
+     run_type = 'Steered' if first_row.get('strength') not in (None, '') else 'Baseline'
+-    feature_title = f"Feature {escape(_display_value(first_row.get('feature_index')))}"
++    if first_row.get('feature_set_label') not in (None, ''):
++        feature_title = f"Feature set {escape(str(first_row.get('feature_set_label')))}"
++    else:
++        feature_title = f"Feature {escape(_display_value(first_row.get('feature_index')))}"
+     subtitle_bits = [
+         f"Sweep: {escape(sweep_name)}",
+         f"Run type: {escape(run_type)}",
+@@ -498,6 +643,8 @@ def _build_clarq_feature_dashboard_html(
+     ]
+     if first_row.get('vocab') not in (None, ''):
+         subtitle_bits.append(f"Vocab: {escape(str(first_row.get('vocab')))}")
++    if first_row.get('feature_indices') not in (None, ''):
++        subtitle_bits.append(f"Features: {escape(str(first_row.get('feature_indices')))}")
+     if first_row.get('module_path') not in (None, ''):
+         subtitle_bits.append(f"Module: {escape(str(first_row.get('module_path')))}")
+     if first_row.get('sae_file') not in (None, ''):
+@@ -607,6 +754,8 @@ def _write_clarq_feature_dashboards(
+         ordered_rows = sorted(group_rows, key=lambda row: _strength_sort_key(row.get('strength')))
+         manifest.append({
+             'feature_index': group_rows[0].get('feature_index'),
++            'feature_set_label': group_rows[0].get('feature_set_label'),
++            'feature_indices': group_rows[0].get('feature_indices'),
+             'vocab': group_rows[0].get('vocab'),
+             'hookpoint': group_rows[0].get('hookpoint'),
+             'module_path': group_rows[0].get('module_path'),
+@@ -622,7 +771,7 @@ def _write_clarq_feature_dashboards(
+             rel_path = Path(row['dashboard_path']).relative_to(sweep_dir)
+             index_rows.append(
+                 '<tr>'
+-                f"<td>{escape(_display_value(row.get('feature_index')))}</td>"
++                f"<td>{escape(_display_value(row.get('feature_set_label') or row.get('feature_index')))}</td>"
+                 f"<td>{escape(str(row.get('hookpoint') or '—'))}</td>"
+                 f"<td>{escape(str(row.get('vocab') or '—'))}</td>"
+                 f"<td>{escape(str(row.get('strengths') or '—'))}</td>"
+@@ -643,9 +792,9 @@ def _write_clarq_feature_dashboards(
+ </head>
+ <body>
+   <h1>{escape(sweep_name)} feature dashboards</h1>
+-  <p>One HTML per steering feature. Each dashboard lets you switch between strengths on a single page.</p>
++  <p>One HTML per steering feature or feature set. Each dashboard lets you switch between strengths on a single page.</p>
+   <table>
+-    <thead><tr><th>Feature</th><th>Hookpoint</th><th>Vocab</th><th>Strengths</th><th>Dashboard</th></tr></thead>
++    <thead><tr><th>Feature / set</th><th>Hookpoint</th><th>Vocab</th><th>Strengths</th><th>Dashboard</th></tr></thead>
+     <tbody>{''.join(index_rows)}</tbody>
+   </table>
+ </body>
+@@ -953,6 +1102,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
+         hookpoint = str(group['hookpoint'])
+         module_path = group.get('module_path')
+         sae_file = group.get('sae_file')
++        sae_repo = group.get('sae_repo')
+         sae_id = group.get('sae_id')
+         features = group['features']
+ 
+@@ -970,6 +1120,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
+                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
+                 if sae_file is not None:
+                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
++                if sae_repo is not None:
++                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
+                 if sae_id is not None:
+                     set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
+ 
+@@ -996,6 +1148,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
+                     'hookpoint': hookpoint,
+                     'module_path': module_path,
+                     'sae_file': sae_file,
++                    'sae_repo': sae_repo,
+                     'sae_id': sae_id,
+                     'feature_index': feature_index,
+                     'strength': strength,
+@@ -1038,6 +1191,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
+                     'hookpoint': hookpoint,
+                     'module_path': module_path,
+                     'sae_file': sae_file,
++                    'sae_repo': sae_repo,
+                     'sae_id': sae_id,
+                     'feature_index': feature_index,
+                     'strength': strength,
+@@ -1102,6 +1256,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
+         hookpoint = str(group['hookpoint'])
+         module_path = group.get('module_path')
+         sae_file = group.get('sae_file')
++        sae_repo = group.get('sae_repo')
+         sae_id = group.get('sae_id')
+         features = group['features']
+ 
+@@ -1124,6 +1279,8 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
+                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
+                 if sae_file is not None:
+                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
++                if sae_repo is not None:
++                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
+                 if sae_id is not None:
+                     set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
+ 
+@@ -1150,6 +1307,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
+                     'hookpoint': hookpoint,
+                     'module_path': module_path,
+                     'sae_file': sae_file,
++                    'sae_repo': sae_repo,
+                     'sae_id': sae_id,
+                     'feature_index': feature_index,
+                     'strength': strength,
+@@ -1192,6 +1350,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
+                     'hookpoint': hookpoint,
+                     'module_path': module_path,
+                     'sae_file': sae_file,
++                    'sae_repo': sae_repo,
+                     'sae_id': sae_id,
+                     'feature_index': feature_index,
+                     'strength': strength,
+@@ -1250,6 +1409,218 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
+         print(f'  per-run reports: {reports_dir}')
+ 
+ 
++def _run_clarq_multi_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
++    _validate_multi_feature_sweep_config(sweep_cfg)
++    sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage = _prepare_sweep_dirs(sweep_cfg, base_cfg)
++    strengths = sweep_cfg['sweep']['strengths']
++    groups = sweep_cfg['sweep']['groups']
++
++    feature_sets_by_group = [_feature_sets_from_group(group) for group in groups]
++    total_runs = sum(len(feature_sets) * len(strengths) for feature_sets in feature_sets_by_group)
++    print(f"=== sweep :: {sweep_name} ===")
++    print('mode: clarq multi_feature_strength')
++    print(f'total runs: {total_runs}')
++    print(f"storage layout: {storage.get('layout', 'flat')}")
++
++    manifest_rows: list[dict[str, Any]] = []
++    summary_rows: list[dict[str, Any]] = []
++    metrics_rows: list[dict[str, Any]] = []
++
++    seen_run_names: set[str] = set()
++    run_counter = 0
++
++    for group_idx, (group, feature_sets) in enumerate(zip(groups, feature_sets_by_group)):
++        vocab = group.get('vocab')
++        hookpoint = str(group['hookpoint'])
++        module_path = group.get('module_path')
++        sae_file = group.get('sae_file')
++        sae_repo = group.get('sae_repo')
++        sae_id = group.get('sae_id')
++        group_weights = group.get('weights')
++        group_normalize_each = bool(group.get('normalize_each', False))
++        group_norm_cap = group.get('norm_cap')
++
++        for feature_set_idx, feature_set in enumerate(feature_sets):
++            feature_indices = [int(x) for x in feature_set['features']]
++            feature_set_label = str(feature_set['label'])
++            feature_weights = feature_set.get('weights', group_weights)
++            normalize_each = bool(feature_set.get('normalize_each', group_normalize_each))
++            norm_cap = feature_set.get('norm_cap', group_norm_cap)
++
++            if feature_weights is not None:
++                feature_weights = [float(x) for x in feature_weights]
++                if len(feature_weights) != len(feature_indices):
++                    raise ValueError(
++                        f"Weights for feature set {feature_set_label!r} must match feature count "
++                        f"({len(feature_weights)} != {len(feature_indices)})."
++                    )
++
++            for strength in strengths:
++                run_counter += 1
++                run_cfg = copy.deepcopy(base_cfg)
++                run_cfg['output']['root_dir'] = str(tmp_root)
++
++                if 'steering' not in run_cfg:
++                    run_cfg['steering'] = {}
++                set_by_dotted_path(run_cfg, 'steering.enabled', True)
++                set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
++                set_by_dotted_path(run_cfg, 'steering.feature_indices', feature_indices)
++                set_by_dotted_path(run_cfg, 'steering.feature_weights', feature_weights)
++                set_by_dotted_path(run_cfg, 'steering.normalize_each', normalize_each)
++                set_by_dotted_path(run_cfg, 'steering.norm_cap', norm_cap)
++                set_by_dotted_path(run_cfg, 'steering.strength', strength)
++
++                if module_path is not None:
++                    set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
++                if sae_file is not None:
++                    set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
++                if sae_repo is not None:
++                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
++                if sae_id is not None:
++                    set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
++
++                run_name = _build_feature_set_run_name(
++                    experiment_prefix=sweep_name,
++                    vocab=None if vocab is None else str(vocab),
++                    hookpoint=hookpoint,
++                    feature_set_label=feature_set_label,
++                    feature_indices=feature_indices,
++                    strength=strength,
++                )
++                if run_name in seen_run_names:
++                    raise ValueError(
++                        'Generated duplicate run name. Add a unique label to each feature set: '
++                        f'{run_name}'
++                    )
++                seen_run_names.add(run_name)
++
++                run_cfg['experiment_name'] = run_name
++                run_cfg['run_metadata'] = {
++                    'sweep_name': sweep_name,
++                    'sweep_mode': 'clarq_multi_feature_strength',
++                    'group_index': group_idx,
++                    'feature_set_index': feature_set_idx,
++                    'vocab': vocab,
++                    'hookpoint': hookpoint,
++                    'module_path': module_path,
++                    'sae_file': sae_file,
++                    'sae_repo': sae_repo,
++                    'sae_id': sae_id,
++                    'feature_set_label': feature_set_label,
++                    'feature_indices': feature_indices,
++                    'feature_count': len(feature_indices),
++                    'feature_weights': feature_weights,
++                    'normalize_each': normalize_each,
++                    'norm_cap': norm_cap,
++                    'strength': strength,
++                }
++
++                cfg_path = None
++                if generated_cfg_dir is not None:
++                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
++                    dump_yaml(cfg_path, run_cfg)
++
++                _emit_run_start(
++                    run_counter,
++                    total_runs,
++                    run_name=run_name,
++                    vocab=None if vocab is None else str(vocab),
++                    hookpoint=hookpoint,
++                    feature_set_label=feature_set_label,
++                    feature_indices=feature_indices,
++                    strength=strength,
++                    config_path=cfg_path,
++                )
++                try:
++                    result = run_clarq_eval(run_cfg)
++                    print(f"  finished: {run_name}")
++                finally:
++                    _release_cuda_memory()
++
++                summary_metrics = _load_single_row_csv(result.get('summary_path'))
++                run_metrics_df = _load_multi_row_csv(result.get('metrics_path'))
++
++                flattened_paths = _flatten_clarq_run_artifacts(
++                    sweep_dir=sweep_dir,
++                    run_name=run_name,
++                    result=result,
++                    storage=storage,
++                )
++
++                manifest_row = {
++                    'run_name': run_name,
++                    'vocab': vocab,
++                    'hookpoint': hookpoint,
++                    'module_path': module_path,
++                    'sae_file': sae_file,
++                    'sae_repo': sae_repo,
++                    'sae_id': sae_id,
++                    'feature_set_label': feature_set_label,
++                    'feature_indices': feature_indices,
++                    'feature_count': len(feature_indices),
++                    'feature_weights': feature_weights,
++                    'normalize_each': normalize_each,
++                    'norm_cap': norm_cap,
++                    'strength': strength,
++                    'config_path': str(cfg_path) if cfg_path is not None else None,
++                    'results_path': flattened_paths['results_path'],
++                    'metrics_path': flattened_paths['metrics_path'],
++                    'summary_path': flattened_paths['summary_path'],
++                    'report_path': flattened_paths['report_path'],
++                }
++                manifest_rows.append(manifest_row)
++
++                # Keep the existing dashboard/summary code working: for a multi-feature
++                # run, feature_index is a human-readable set label.
++                summary_metadata = dict(manifest_row)
++                summary_metadata['feature_index'] = feature_set_label
++                if summary_metrics:
++                    summary_rows.append(_merge_metadata(summary_metadata, summary_metrics))
++                if not run_metrics_df.empty:
++                    for _, metric_row in run_metrics_df.iterrows():
++                        metrics_rows.append(_merge_metadata(summary_metadata, metric_row.to_dict()))
++
++    manifest_df = pd.DataFrame(manifest_rows, columns=CLARQ_MULTI_FEATURE_MANIFEST_COLUMNS)
++    manifest_jsonl = sweep_dir / 'manifest.jsonl'
++    manifest_csv = sweep_dir / 'manifest.csv'
++    write_jsonl(manifest_jsonl, manifest_rows)
++    write_csv(manifest_csv, manifest_df)
++
++    if summary_rows:
++        summary_df = pd.DataFrame(summary_rows)
++        available_summary_cols = [c for c in CLARQ_COMPACT_SUMMARY_COLUMNS if c in summary_df.columns]
++        if available_summary_cols:
++            summary_df = summary_df.loc[:, available_summary_cols]
++        write_csv(sweep_dir / 'clarq_summary.csv', summary_df)
++    if metrics_rows:
++        metrics_df = pd.DataFrame(metrics_rows)
++        write_csv(sweep_dir / 'clarq_metrics.csv', metrics_df)
++
++    feature_dashboard_manifest: list[dict[str, Any]] = []
++    if storage.get('keep_clarq_feature_dashboards', True) and summary_rows:
++        feature_dashboard_manifest = _write_clarq_feature_dashboards(
++            sweep_dir=sweep_dir,
++            sweep_name=sweep_name,
++            summary_rows=summary_rows,
++            metrics_rows=metrics_rows,
++        )
++
++    if storage.get('cleanup_tmp_run_dirs', True):
++        _safe_rmtree(tmp_root)
++
++    print(f"\nSweep finished: {sweep_name}")
++    print(f'  manifest: {manifest_csv}')
++    if summary_rows:
++        print(f'  summary: {sweep_dir / "clarq_summary.csv"}')
++    if metrics_rows:
++        print(f'  metrics: {sweep_dir / "clarq_metrics.csv"}')
++    if feature_dashboard_manifest:
++        print(f'  feature dashboards: {sweep_dir / "clarq_feature_dashboards.html"}')
++    reports_dir = sweep_dir / 'reports'
++    if reports_dir.exists() and any(reports_dir.glob('*.html')):
++        print(f'  per-run reports: {reports_dir}')
++
++
+ if __name__ == '__main__':
+     args = parse_args()
+     sweep_cfg = load_yaml(args.config)
+@@ -1266,8 +1637,12 @@ if __name__ == '__main__':
+             _run_clarq_single_feature_strength_sweep(sweep_cfg, base_cfg)
+         else:
+             _run_single_feature_strength_sweep(sweep_cfg, base_cfg)
++    elif sweep_mode in {'multi_feature_strength', 'feature_set_strength', 'cluster_feature_strength'}:
++        if not is_clarq_base:
++            raise ValueError('multi_feature_strength is currently implemented for ClarQ base configs.')
++        _run_clarq_multi_feature_strength_sweep(sweep_cfg, base_cfg)
+     else:
+         raise ValueError(
+-            'Unsupported sweep config. Use either legacy sweep.parameter/sweep.values '
+-            'or sweep.mode=single_feature_strength with sweep.strengths and sweep.groups.'
+-        )
+\ No newline at end of file
++            'Unsupported sweep config. Use either legacy sweep.parameter/sweep.values, '
++            'sweep.mode=single_feature_strength, or sweep.mode=multi_feature_strength.'
++        )
+diff --git a/src/clarifysae_llama/steering/config.py b/src/clarifysae_llama/steering/config.py
+index 8dc841d..5947937 100644
+--- a/src/clarifysae_llama/steering/config.py
++++ b/src/clarifysae_llama/steering/config.py
+@@ -11,13 +11,13 @@ class SteeringConfig:
+     feature_indices: list[int]
+     strength: float
+ 
+-    # New fields for loader / repo compatibility.
+-    loader: str = "sparsify"  # "sparsify" or "dictionary_learning"
++    # Loader / repo compatibility.
++    loader: str = "sparsify"  # "sparsify", "dictionary_learning", or "saelens"
+     sae_file: Optional[str] = None
+     sae_id: Optional[str] = None
+     module_path: Optional[str] = None
+ 
+-    # Existing steering controls.
++    # Steering controls.
+     mode: str = "additive"
+     apply_to: str = "all_positions"
+     steer_generated_tokens_only: bool = False
+@@ -25,4 +25,11 @@ class SteeringConfig:
+     preserve_unsteered_residual: bool = False
+     clamp_latents: Optional[float] = None
+     log_feature_acts: bool = False
+-    max_act: Optional[float] = None
+\ No newline at end of file
++    max_act: Optional[float] = None
++
++    # Multi-feature controls. These mirror the old AmbiK Gemma combine mode:
++    # v_S = sum_j weight_j * max_act_j * decoder_j, then h' = h + strength * v_S.
++    # For latent-additive mode, weights scale the latent increment for each feature.
++    feature_weights: Optional[list[float]] = None
++    normalize_each: bool = False
++    norm_cap: Optional[float] = None
+diff --git a/src/clarifysae_llama/steering/sparsify_steerer.py b/src/clarifysae_llama/steering/sparsify_steerer.py
+index 1e969cd..705ce47 100644
+--- a/src/clarifysae_llama/steering/sparsify_steerer.py
++++ b/src/clarifysae_llama/steering/sparsify_steerer.py
+@@ -211,8 +211,11 @@ class SparsifySteerer:
+             dtype=self.sae_dtype,
+         )
+         self._validate_feature_indices()
++        self._validate_feature_weights()
+ 
+     def _validate_feature_indices(self) -> None:
++        if not self.config.feature_indices:
++            raise ValueError("steering.feature_indices must contain at least one feature.")
+         num_latents = int(get_num_latents(self.sae))
+         invalid = [int(idx) for idx in self.config.feature_indices if int(idx) < 0 or int(idx) >= num_latents]
+         if invalid:
+@@ -220,6 +223,23 @@ class SparsifySteerer:
+                 f"Feature indices out of bounds for SAE with {num_latents} latents: {invalid[:10]}"
+             )
+ 
++    def _validate_feature_weights(self) -> None:
++        if self.config.feature_weights is None:
++            return
++        if len(self.config.feature_weights) != len(self.config.feature_indices):
++            raise ValueError(
++                "steering.feature_weights must have the same length as steering.feature_indices "
++                f"({len(self.config.feature_weights)} != {len(self.config.feature_indices)})."
++            )
++
++    def _feature_weight(self, feature_idx: int) -> float:
++        if self.config.feature_weights is None:
++            return 1.0
++        for idx, weight in zip(self.config.feature_indices, self.config.feature_weights):
++            if int(idx) == int(feature_idx):
++                return float(weight)
++        return 1.0
++
+     def attach(self) -> None:
+         if self.handle is None:
+             self.handle = self.target_module.register_forward_hook(self._hook_fn)
+@@ -315,10 +335,28 @@ class SparsifySteerer:
+ 
+         decoder = get_decoder_matrix(self.sae).to(device=self.sae_device, dtype=self.sae_dtype)
+         vector = torch.zeros(decoder.shape[-1], device=self.sae_device, dtype=self.sae_dtype)
++
+         for feature_idx in self.config.feature_indices:
+             feature_idx = int(feature_idx)
+             max_act = float(self._cached_feature_max_acts[feature_idx])
+-            vector = vector + decoder[feature_idx] * (max_act * float(self.config.strength))
++            weight = self._feature_weight(feature_idx)
++            direction = decoder[feature_idx]
++            if self.config.normalize_each:
++                direction = direction / direction.norm().clamp_min(1e-8)
++            vector = vector + direction * (max_act * weight)
++
++        # Match the old AmbiK generate_with_multi_feature_steering(...) semantics:
++        #   combined = sum_j max_act_j * weight_j * W_dec[j]
++        #   if norm_cap is not None: combined = cap_norm(combined)
++        #   h' = h + strength * combined
++        # In particular, norm_cap applies to the pre-strength combined vector.
++        if self.config.norm_cap is not None:
++            cap = float(self.config.norm_cap)
++            norm = vector.norm().clamp_min(1e-8)
++            if float(norm.item()) > cap:
++                vector = vector * (cap / norm)
++
++        vector = vector * float(self.config.strength)
+         return vector.to(device=device, dtype=dtype)
+ 
+     @torch.inference_mode()
+@@ -383,9 +421,10 @@ class SparsifySteerer:
+         for feature_idx in self.config.feature_indices:
+             feature_idx = int(feature_idx)
+ 
++            delta = float(self.config.strength) * self._feature_weight(feature_idx)
+             hit_mask = steered_top_indices == feature_idx
+             if hit_mask.any():
+-                steered_top_acts[hit_mask] += self.config.strength
++                steered_top_acts[hit_mask] += delta
+ 
+             missing_rows = ~hit_mask.any(dim=1)
+             if missing_rows.any():
+@@ -396,7 +435,7 @@ class SparsifySteerer:
+                 idx_missing = steered_top_indices[missing_rows].clone()
+ 
+                 idx_missing[row_idx, replacement_col] = feature_idx
+-                acts_missing[row_idx, replacement_col] = self.config.strength
++                acts_missing[row_idx, replacement_col] = delta
+ 
+                 steered_top_acts[missing_rows] = acts_missing
+                 steered_top_indices[missing_rows] = idx_missing

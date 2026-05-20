@@ -211,14 +211,34 @@ class SparsifySteerer:
             dtype=self.sae_dtype,
         )
         self._validate_feature_indices()
+        self._validate_feature_weights()
 
     def _validate_feature_indices(self) -> None:
+        if not self.config.feature_indices:
+            raise ValueError("steering.feature_indices must contain at least one feature.")
         num_latents = int(get_num_latents(self.sae))
         invalid = [int(idx) for idx in self.config.feature_indices if int(idx) < 0 or int(idx) >= num_latents]
         if invalid:
             raise ValueError(
                 f"Feature indices out of bounds for SAE with {num_latents} latents: {invalid[:10]}"
             )
+
+    def _validate_feature_weights(self) -> None:
+        if self.config.feature_weights is None:
+            return
+        if len(self.config.feature_weights) != len(self.config.feature_indices):
+            raise ValueError(
+                "steering.feature_weights must have the same length as steering.feature_indices "
+                f"({len(self.config.feature_weights)} != {len(self.config.feature_indices)})."
+            )
+
+    def _feature_weight(self, feature_idx: int) -> float:
+        if self.config.feature_weights is None:
+            return 1.0
+        for idx, weight in zip(self.config.feature_indices, self.config.feature_weights):
+            if int(idx) == int(feature_idx):
+                return float(weight)
+        return 1.0
 
     def attach(self) -> None:
         if self.handle is None:
@@ -315,10 +335,28 @@ class SparsifySteerer:
 
         decoder = get_decoder_matrix(self.sae).to(device=self.sae_device, dtype=self.sae_dtype)
         vector = torch.zeros(decoder.shape[-1], device=self.sae_device, dtype=self.sae_dtype)
+
         for feature_idx in self.config.feature_indices:
             feature_idx = int(feature_idx)
             max_act = float(self._cached_feature_max_acts[feature_idx])
-            vector = vector + decoder[feature_idx] * (max_act * float(self.config.strength))
+            weight = self._feature_weight(feature_idx)
+            direction = decoder[feature_idx]
+            if self.config.normalize_each:
+                direction = direction / direction.norm().clamp_min(1e-8)
+            vector = vector + direction * (max_act * weight)
+
+        # Match the old AmbiK generate_with_multi_feature_steering(...) semantics:
+        #   combined = sum_j max_act_j * weight_j * W_dec[j]
+        #   if norm_cap is not None: combined = cap_norm(combined)
+        #   h' = h + strength * combined
+        # In particular, norm_cap applies to the pre-strength combined vector.
+        if self.config.norm_cap is not None:
+            cap = float(self.config.norm_cap)
+            norm = vector.norm().clamp_min(1e-8)
+            if float(norm.item()) > cap:
+                vector = vector * (cap / norm)
+
+        vector = vector * float(self.config.strength)
         return vector.to(device=device, dtype=dtype)
 
     @torch.inference_mode()
@@ -383,9 +421,10 @@ class SparsifySteerer:
         for feature_idx in self.config.feature_indices:
             feature_idx = int(feature_idx)
 
+            delta = float(self.config.strength) * self._feature_weight(feature_idx)
             hit_mask = steered_top_indices == feature_idx
             if hit_mask.any():
-                steered_top_acts[hit_mask] += self.config.strength
+                steered_top_acts[hit_mask] += delta
 
             missing_rows = ~hit_mask.any(dim=1)
             if missing_rows.any():
@@ -396,7 +435,7 @@ class SparsifySteerer:
                 idx_missing = steered_top_indices[missing_rows].clone()
 
                 idx_missing[row_idx, replacement_col] = feature_idx
-                acts_missing[row_idx, replacement_col] = self.config.strength
+                acts_missing[row_idx, replacement_col] = delta
 
                 steered_top_acts[missing_rows] = acts_missing
                 steered_top_indices[missing_rows] = idx_missing

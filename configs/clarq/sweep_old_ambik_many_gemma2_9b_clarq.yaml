@@ -1,0 +1,45 @@
+experiment_name: gemma2_9b_old_ambik_many_feature_strength_sweep_clarq
+base_config: configs/clarq/gemma2_9b_clarq_sweep_base.yaml
+
+# These are the old multi-feature Gemma-9B combinations whose feature ids are
+# recoverable from old repo result filenames such as
+# ambik_9b_many_229_480_748_multi3_str0.8.json.
+# They are NOT the hidden `ambik_cluster_*` groups, because the uploaded old
+# result JSONs do not store those clusters' feature memberships.
+
+sweep:
+  mode: multi_feature_strength
+  strengths: [0.8, 1.5]
+  groups:
+    - vocab: old_many
+      hookpoint: blocks.20.hook_resid_post
+      module_path: model.layers.20
+      sae_id: layer_20/width_16k/average_l0_91
+      normalize_each: false
+      norm_cap: null
+      feature_sets:
+        - label: ambik_9b_many_229_480_748
+          features: [229, 480, 748]
+        - label: ambik_9b_many_229_480
+          features: [229, 480]
+        - label: ambik_9b_many_229_488_113
+          features: [229, 488, 113]
+        - label: ambik_9b_many_229_488_480
+          features: [229, 488, 480]
+        - label: ambik_9b_many_229_488
+          features: [229, 488]
+        - label: ambik_9b_many_771_383
+          features: [771, 383]
+        - label: ambik_9b_many_771_711_318
+          features: [771, 711, 318]
+        - label: ambik_9b_many_771_711
+          features: [771, 711]
+  storage:
+    layout: flat
+    keep_generated_configs: false
+    keep_results: true
+    keep_clarq_metrics: true
+    keep_clarq_summary: true
+    keep_clarq_report: true
+    keep_clarq_feature_dashboards: true
+    cleanup_tmp_run_dirs: true

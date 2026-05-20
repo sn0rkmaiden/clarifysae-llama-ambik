@@ -11,13 +11,13 @@ class SteeringConfig:
     feature_indices: list[int]
     strength: float
 
-    # New fields for loader / repo compatibility.
-    loader: str = "sparsify"  # "sparsify" or "dictionary_learning"
+    # Loader / repo compatibility.
+    loader: str = "sparsify"  # "sparsify", "dictionary_learning", or "saelens"
     sae_file: Optional[str] = None
     sae_id: Optional[str] = None
     module_path: Optional[str] = None
 
-    # Existing steering controls.
+    # Steering controls.
     mode: str = "additive"
     apply_to: str = "all_positions"
     steer_generated_tokens_only: bool = False
@@ -26,3 +26,10 @@ class SteeringConfig:
     clamp_latents: Optional[float] = None
     log_feature_acts: bool = False
     max_act: Optional[float] = None
+
+    # Multi-feature controls. These mirror the old AmbiK Gemma combine mode:
+    # v_S = sum_j weight_j * max_act_j * decoder_j, then h' = h + strength * v_S.
+    # For latent-additive mode, weights scale the latent increment for each feature.
+    feature_weights: Optional[list[float]] = None
+    normalize_each: bool = False
+    norm_cap: Optional[float] = None

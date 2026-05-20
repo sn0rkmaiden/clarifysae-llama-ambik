@@ -179,6 +179,71 @@ python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_fea
 python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_single_feature_strengths_clarq_many.yaml
 ```
 
+### ClarQ multi-feature steering sweeps
+
+Multi-feature ClarQ sweeps use the same decoder-vector combination rule as the old AmbiK Gemma code:
+
+```text
+combined = sum(max_act_j * weight_j * W_dec[j] for j in features)
+hidden = hidden + strength * combined
+```
+
+The exact old AmbiK cluster memberships are now recovered from the old `SAE-Reasoning` repo, specifically the `extraction/clusters/*/features_clustered.csv` files. These configs rerun the same cluster feature sets on ClarQ-LLM with the same old combined-decoder steering rule and strengths `[1, 3, 5, 10]`:
+
+```bash
+python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_clusters_gemma_2b_clarq.yaml
+python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_clusters_gemma2_9b_clarq.yaml
+```
+
+There is also a config for the older hand-combined Gemma-9B feature sets whose IDs were recoverable directly from filenames such as `ambik_9b_many_229_480_748_multi3_str0.8.json`:
+
+```bash
+python -m clarifysae_llama.runners.sweep --config configs/clarq/sweep_old_ambik_many_gemma2_9b_clarq.yaml
+```
+
+A multi-feature group looks like this:
+
+```yaml
+sweep:
+  mode: multi_feature_strength
+  strengths: [0.8, 1.5]
+  groups:
+    - vocab: old_many
+      hookpoint: blocks.20.hook_resid_post
+      module_path: model.layers.20
+      sae_id: layer_20/width_16k/average_l0_91
+      normalize_each: false
+      norm_cap: null
+      feature_sets:
+        - label: ambik_9b_many_229_480_748
+          features: [229, 480, 748]
+```
+
+Optional per-set fields:
+- `weights`: list of per-feature weights matching `features`
+- `normalize_each: true`: normalize each decoder direction before summing
+- `norm_cap`: cap the norm of the summed steering vector before applying `strength`, matching the old helper
+
+To derive new clustered feature sets from decoder-direction similarity, use:
+
+```bash
+python scripts/build_decoder_similarity_feature_sets.py \
+  --features "344,383,565,591,688,771" \
+  --loader saelens \
+  --sae_repo gemma-scope-9b-it-res \
+  --sae_id layer_20/width_16k/average_l0_91 \
+  --hookpoint blocks.20.hook_resid_post \
+  --threshold 0.60 \
+  --out_yaml outputs/feature_sets/gemma9b_C_l20_thr06.yaml
+```
+
+For ClarQ sweeps, the key output files are:
+- `outputs/sweeps/<sweep_name>/manifest.csv`
+- `outputs/sweeps/<sweep_name>/clarq_summary.csv`
+- `outputs/sweeps/<sweep_name>/clarq_metrics.csv`
+- `outputs/sweeps/<sweep_name>/clarq_feature_dashboards.html`
+- `outputs/sweeps/<sweep_name>/reports/*.html`
+
 Notes:
 - the ClarQ runner currently assumes the old **Comp / pure prompt** setup, which is
   the closest match to your previous Gemma runs

@@ -33,7 +33,10 @@ class SteeredHFCausalBackend(HFCausalBackend):
                 preserve_unsteered_residual=runtime_cfg.get("preserve_unsteered_residual", False),
                 clamp_latents=runtime_cfg.get("clamp_latents"),
                 log_feature_acts=runtime_cfg.get("log_feature_acts", False),
-                max_act=runtime_cfg.get("max_act"),
+                max_act=steering_cfg.get("max_act", runtime_cfg.get("max_act")),
+                feature_weights=steering_cfg.get("feature_weights"),
+                normalize_each=bool(steering_cfg.get("normalize_each", runtime_cfg.get("normalize_each", False))),
+                norm_cap=steering_cfg.get("norm_cap", runtime_cfg.get("norm_cap")),
             ),
         )
 

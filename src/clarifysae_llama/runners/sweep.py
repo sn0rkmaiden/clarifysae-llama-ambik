@@ -38,6 +38,7 @@ SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'hookpoint',
     'module_path',
     'sae_file',
+    'sae_repo',
     'sae_id',
     'feature_index',
     'strength',
@@ -55,8 +56,31 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
     'hookpoint',
     'module_path',
     'sae_file',
+    'sae_repo',
     'sae_id',
     'feature_index',
+    'strength',
+    'config_path',
+    'results_path',
+    'metrics_path',
+    'summary_path',
+    'report_path',
+]
+
+CLARQ_MULTI_FEATURE_MANIFEST_COLUMNS = [
+    'run_name',
+    'vocab',
+    'hookpoint',
+    'module_path',
+    'sae_file',
+    'sae_repo',
+    'sae_id',
+    'feature_set_label',
+    'feature_indices',
+    'feature_count',
+    'feature_weights',
+    'normalize_each',
+    'norm_cap',
     'strength',
     'config_path',
     'results_path',
@@ -68,6 +92,9 @@ CLARQ_SINGLE_FEATURE_MANIFEST_COLUMNS = [
 CLARQ_COMPACT_SUMMARY_COLUMNS = [
     'run_name',
     'feature_index',
+    'feature_set_label',
+    'feature_indices',
+    'feature_count',
     'strength',
     'success_rate',
     'step_recall',
@@ -124,6 +151,87 @@ def _build_single_feature_run_name(
     parts.extend([
         _short_hookpoint(hookpoint),
         f'feat{feature_index}',
+        f'str{_sanitize_token(strength)}',
+    ])
+    return '__'.join(parts)
+
+
+def _features_token(feature_indices: list[int], *, max_items: int = 6) -> str:
+    values = [str(int(x)) for x in feature_indices]
+    if len(values) > max_items:
+        digest = hashlib.md5(','.join(values).encode('utf-8')).hexdigest()[:8]
+        shown = '-'.join(values[:max_items])
+        return f'{shown}-plus{len(values) - max_items}-{digest}'
+    return '-'.join(values)
+
+
+def _feature_set_label(feature_set: dict[str, Any], set_index: int) -> str:
+    for key in ('label', 'name', 'cluster_label'):
+        if feature_set.get(key) not in (None, ''):
+            return str(feature_set[key])
+    if feature_set.get('cluster_id') not in (None, ''):
+        return f"cluster{feature_set['cluster_id']}"
+    if feature_set.get('cluster') not in (None, ''):
+        return f"cluster{feature_set['cluster']}"
+    return f'set{set_index}'
+
+
+def _normalize_feature_set_entry(raw_entry: Any, set_index: int) -> dict[str, Any]:
+    if isinstance(raw_entry, dict):
+        entry = dict(raw_entry)
+    elif isinstance(raw_entry, list):
+        entry = {'features': raw_entry}
+    else:
+        raise ValueError(
+            'Each feature set must be either a mapping with a features list or a bare list of feature ids. '
+            f'Got {type(raw_entry)!r} at index {set_index}.'
+        )
+
+    if 'features' not in entry:
+        raise ValueError(f'feature_sets[{set_index}] is missing features.')
+    if not isinstance(entry['features'], list) or not entry['features']:
+        raise ValueError(f'feature_sets[{set_index}].features must be a non-empty list.')
+    entry['features'] = [int(x) for x in entry['features']]
+    entry['label'] = _feature_set_label(entry, set_index)
+
+    if entry.get('weights') is not None:
+        if not isinstance(entry['weights'], list) or len(entry['weights']) != len(entry['features']):
+            raise ValueError(
+                f"feature_sets[{set_index}].weights must be a list with the same length as features "
+                f"({len(entry.get('weights') or [])} != {len(entry['features'])})."
+            )
+        entry['weights'] = [float(x) for x in entry['weights']]
+    return entry
+
+
+def _feature_sets_from_group(group: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_sets = group.get('feature_sets')
+    if raw_sets is None:
+        raw_sets = group.get('clusters')
+    if raw_sets is None:
+        # Convenience: a group-level features list becomes one combined feature set.
+        raw_sets = [{'label': group.get('label', 'combined'), 'features': group.get('features')}]
+    if not isinstance(raw_sets, list) or not raw_sets:
+        raise ValueError('multi_feature_strength groups require a non-empty feature_sets list.')
+    return [_normalize_feature_set_entry(entry, idx) for idx, entry in enumerate(raw_sets)]
+
+
+def _build_feature_set_run_name(
+    experiment_prefix: str,
+    vocab: str | None,
+    hookpoint: str,
+    feature_set_label: str,
+    feature_indices: list[int],
+    strength: Any,
+) -> str:
+    parts = [experiment_prefix]
+    if vocab:
+        parts.append(_sanitize_token(vocab))
+    parts.extend([
+        _short_hookpoint(hookpoint),
+        _sanitize_token(feature_set_label),
+        f'multi{len(feature_indices)}',
+        f'feats{_sanitize_token(_features_token(feature_indices))}',
         f'str{_sanitize_token(strength)}',
     ])
     return '__'.join(parts)
@@ -205,8 +313,34 @@ def _validate_single_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
             raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
         if 'sae_file' in group and not isinstance(group['sae_file'], str):
             raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
+        if 'sae_repo' in group and not isinstance(group['sae_repo'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_repo must be a string if provided.')
         if 'sae_id' in group and not isinstance(group['sae_id'], str):
             raise ValueError(f'sweep.groups[{group_idx}].sae_id must be a string if provided.')
+
+
+def _validate_multi_feature_sweep_config(sweep_cfg: dict[str, Any]) -> None:
+    sweep_section = sweep_cfg.get('sweep', {})
+    strengths = sweep_section.get('strengths')
+    groups = sweep_section.get('groups')
+
+    if not isinstance(strengths, list) or not strengths:
+        raise ValueError('multi_feature_strength sweep requires a non-empty sweep.strengths list.')
+    if not isinstance(groups, list) or not groups:
+        raise ValueError('multi_feature_strength sweep requires a non-empty sweep.groups list.')
+
+    for group_idx, group in enumerate(groups):
+        if 'hookpoint' not in group:
+            raise ValueError(f'sweep.groups[{group_idx}] is missing hookpoint.')
+        if 'module_path' in group and not isinstance(group['module_path'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].module_path must be a string if provided.')
+        if 'sae_file' in group and not isinstance(group['sae_file'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_file must be a string if provided.')
+        if 'sae_repo' in group and not isinstance(group['sae_repo'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_repo must be a string if provided.')
+        if 'sae_id' in group and not isinstance(group['sae_id'], str):
+            raise ValueError(f'sweep.groups[{group_idx}].sae_id must be a string if provided.')
+        _feature_sets_from_group(group)
 
 
 def _emit_run_start(
@@ -216,7 +350,9 @@ def _emit_run_start(
     run_name: str,
     vocab: str | None = None,
     hookpoint: str | None = None,
-    feature_index: int | None = None,
+    feature_index: int | str | None = None,
+    feature_indices: list[int] | None = None,
+    feature_set_label: str | None = None,
     strength: Any | None = None,
     config_path: Path | None = None,
 ) -> None:
@@ -228,6 +364,10 @@ def _emit_run_start(
         details.append(f'hookpoint={hookpoint}')
     if feature_index is not None:
         details.append(f'feature={feature_index}')
+    if feature_set_label is not None:
+        details.append(f'feature_set={feature_set_label}')
+    if feature_indices is not None:
+        details.append(f'features={feature_indices}')
     if strength is not None:
         details.append(f'strength={strength}')
     if details:
@@ -358,7 +498,8 @@ def _feature_group_key(row: dict[str, Any]) -> tuple[Any, ...]:
         row.get('module_path'),
         row.get('sae_file'),
         row.get('sae_id'),
-        row.get('feature_index'),
+        row.get('feature_set_label') or row.get('feature_index'),
+        str(row.get('feature_indices') or ''),
     )
 
 
@@ -366,7 +507,8 @@ def _feature_dashboard_filename(row: dict[str, Any]) -> str:
     parts = []
     if row.get('vocab') not in (None, ''):
         parts.append(_sanitize_token(row['vocab']))
-    parts.extend([_short_hookpoint(str(row.get('hookpoint', 'hook'))), f"feat{_sanitize_token(row.get('feature_index', 'na'))}"])
+    feature_label = row.get('feature_set_label') or row.get('feature_index', 'na')
+    parts.extend([_short_hookpoint(str(row.get('hookpoint', 'hook'))), f"feat{_sanitize_token(feature_label)}"])
     digest = hashlib.md5(repr(_feature_group_key(row)).encode('utf-8')).hexdigest()[:8]
     parts.append(digest)
     return '__'.join(parts) + '.html'
@@ -490,7 +632,10 @@ def _build_clarq_feature_dashboard_html(
         )
 
     run_type = 'Steered' if first_row.get('strength') not in (None, '') else 'Baseline'
-    feature_title = f"Feature {escape(_display_value(first_row.get('feature_index')))}"
+    if first_row.get('feature_set_label') not in (None, ''):
+        feature_title = f"Feature set {escape(str(first_row.get('feature_set_label')))}"
+    else:
+        feature_title = f"Feature {escape(_display_value(first_row.get('feature_index')))}"
     subtitle_bits = [
         f"Sweep: {escape(sweep_name)}",
         f"Run type: {escape(run_type)}",
@@ -498,6 +643,8 @@ def _build_clarq_feature_dashboard_html(
     ]
     if first_row.get('vocab') not in (None, ''):
         subtitle_bits.append(f"Vocab: {escape(str(first_row.get('vocab')))}")
+    if first_row.get('feature_indices') not in (None, ''):
+        subtitle_bits.append(f"Features: {escape(str(first_row.get('feature_indices')))}")
     if first_row.get('module_path') not in (None, ''):
         subtitle_bits.append(f"Module: {escape(str(first_row.get('module_path')))}")
     if first_row.get('sae_file') not in (None, ''):
@@ -607,6 +754,8 @@ def _write_clarq_feature_dashboards(
         ordered_rows = sorted(group_rows, key=lambda row: _strength_sort_key(row.get('strength')))
         manifest.append({
             'feature_index': group_rows[0].get('feature_index'),
+            'feature_set_label': group_rows[0].get('feature_set_label'),
+            'feature_indices': group_rows[0].get('feature_indices'),
             'vocab': group_rows[0].get('vocab'),
             'hookpoint': group_rows[0].get('hookpoint'),
             'module_path': group_rows[0].get('module_path'),
@@ -622,7 +771,7 @@ def _write_clarq_feature_dashboards(
             rel_path = Path(row['dashboard_path']).relative_to(sweep_dir)
             index_rows.append(
                 '<tr>'
-                f"<td>{escape(_display_value(row.get('feature_index')))}</td>"
+                f"<td>{escape(_display_value(row.get('feature_set_label') or row.get('feature_index')))}</td>"
                 f"<td>{escape(str(row.get('hookpoint') or '—'))}</td>"
                 f"<td>{escape(str(row.get('vocab') or '—'))}</td>"
                 f"<td>{escape(str(row.get('strengths') or '—'))}</td>"
@@ -643,9 +792,9 @@ def _write_clarq_feature_dashboards(
 </head>
 <body>
   <h1>{escape(sweep_name)} feature dashboards</h1>
-  <p>One HTML per steering feature. Each dashboard lets you switch between strengths on a single page.</p>
+  <p>One HTML per steering feature or feature set. Each dashboard lets you switch between strengths on a single page.</p>
   <table>
-    <thead><tr><th>Feature</th><th>Hookpoint</th><th>Vocab</th><th>Strengths</th><th>Dashboard</th></tr></thead>
+    <thead><tr><th>Feature / set</th><th>Hookpoint</th><th>Vocab</th><th>Strengths</th><th>Dashboard</th></tr></thead>
     <tbody>{''.join(index_rows)}</tbody>
   </table>
 </body>
@@ -953,6 +1102,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
         hookpoint = str(group['hookpoint'])
         module_path = group.get('module_path')
         sae_file = group.get('sae_file')
+        sae_repo = group.get('sae_repo')
         sae_id = group.get('sae_id')
         features = group['features']
 
@@ -970,6 +1120,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
                 if sae_file is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+                if sae_repo is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
                 if sae_id is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
 
@@ -996,6 +1148,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_repo': sae_repo,
                     'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
@@ -1038,6 +1191,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_repo': sae_repo,
                     'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
@@ -1102,6 +1256,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
         hookpoint = str(group['hookpoint'])
         module_path = group.get('module_path')
         sae_file = group.get('sae_file')
+        sae_repo = group.get('sae_repo')
         sae_id = group.get('sae_id')
         features = group['features']
 
@@ -1124,6 +1279,8 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
                 if sae_file is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+                if sae_repo is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
                 if sae_id is not None:
                     set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
 
@@ -1150,6 +1307,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_repo': sae_repo,
                     'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
@@ -1192,6 +1350,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     'hookpoint': hookpoint,
                     'module_path': module_path,
                     'sae_file': sae_file,
+                    'sae_repo': sae_repo,
                     'sae_id': sae_id,
                     'feature_index': feature_index,
                     'strength': strength,
@@ -1250,6 +1409,218 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
         print(f'  per-run reports: {reports_dir}')
 
 
+def _run_clarq_multi_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> None:
+    _validate_multi_feature_sweep_config(sweep_cfg)
+    sweep_name, sweep_dir, generated_cfg_dir, tmp_root, storage = _prepare_sweep_dirs(sweep_cfg, base_cfg)
+    strengths = sweep_cfg['sweep']['strengths']
+    groups = sweep_cfg['sweep']['groups']
+
+    feature_sets_by_group = [_feature_sets_from_group(group) for group in groups]
+    total_runs = sum(len(feature_sets) * len(strengths) for feature_sets in feature_sets_by_group)
+    print(f"=== sweep :: {sweep_name} ===")
+    print('mode: clarq multi_feature_strength')
+    print(f'total runs: {total_runs}')
+    print(f"storage layout: {storage.get('layout', 'flat')}")
+
+    manifest_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+    metrics_rows: list[dict[str, Any]] = []
+
+    seen_run_names: set[str] = set()
+    run_counter = 0
+
+    for group_idx, (group, feature_sets) in enumerate(zip(groups, feature_sets_by_group)):
+        vocab = group.get('vocab')
+        hookpoint = str(group['hookpoint'])
+        module_path = group.get('module_path')
+        sae_file = group.get('sae_file')
+        sae_repo = group.get('sae_repo')
+        sae_id = group.get('sae_id')
+        group_weights = group.get('weights')
+        group_normalize_each = bool(group.get('normalize_each', False))
+        group_norm_cap = group.get('norm_cap')
+
+        for feature_set_idx, feature_set in enumerate(feature_sets):
+            feature_indices = [int(x) for x in feature_set['features']]
+            feature_set_label = str(feature_set['label'])
+            feature_weights = feature_set.get('weights', group_weights)
+            normalize_each = bool(feature_set.get('normalize_each', group_normalize_each))
+            norm_cap = feature_set.get('norm_cap', group_norm_cap)
+
+            if feature_weights is not None:
+                feature_weights = [float(x) for x in feature_weights]
+                if len(feature_weights) != len(feature_indices):
+                    raise ValueError(
+                        f"Weights for feature set {feature_set_label!r} must match feature count "
+                        f"({len(feature_weights)} != {len(feature_indices)})."
+                    )
+
+            for strength in strengths:
+                run_counter += 1
+                run_cfg = copy.deepcopy(base_cfg)
+                run_cfg['output']['root_dir'] = str(tmp_root)
+
+                if 'steering' not in run_cfg:
+                    run_cfg['steering'] = {}
+                set_by_dotted_path(run_cfg, 'steering.enabled', True)
+                set_by_dotted_path(run_cfg, 'steering.hookpoint', hookpoint)
+                set_by_dotted_path(run_cfg, 'steering.feature_indices', feature_indices)
+                set_by_dotted_path(run_cfg, 'steering.feature_weights', feature_weights)
+                set_by_dotted_path(run_cfg, 'steering.normalize_each', normalize_each)
+                set_by_dotted_path(run_cfg, 'steering.norm_cap', norm_cap)
+                set_by_dotted_path(run_cfg, 'steering.strength', strength)
+
+                if module_path is not None:
+                    set_by_dotted_path(run_cfg, 'steering.module_path', module_path)
+                if sae_file is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_file', sae_file)
+                if sae_repo is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_repo', sae_repo)
+                if sae_id is not None:
+                    set_by_dotted_path(run_cfg, 'steering.sae_id', sae_id)
+
+                run_name = _build_feature_set_run_name(
+                    experiment_prefix=sweep_name,
+                    vocab=None if vocab is None else str(vocab),
+                    hookpoint=hookpoint,
+                    feature_set_label=feature_set_label,
+                    feature_indices=feature_indices,
+                    strength=strength,
+                )
+                if run_name in seen_run_names:
+                    raise ValueError(
+                        'Generated duplicate run name. Add a unique label to each feature set: '
+                        f'{run_name}'
+                    )
+                seen_run_names.add(run_name)
+
+                run_cfg['experiment_name'] = run_name
+                run_cfg['run_metadata'] = {
+                    'sweep_name': sweep_name,
+                    'sweep_mode': 'clarq_multi_feature_strength',
+                    'group_index': group_idx,
+                    'feature_set_index': feature_set_idx,
+                    'vocab': vocab,
+                    'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
+                    'sae_repo': sae_repo,
+                    'sae_id': sae_id,
+                    'feature_set_label': feature_set_label,
+                    'feature_indices': feature_indices,
+                    'feature_count': len(feature_indices),
+                    'feature_weights': feature_weights,
+                    'normalize_each': normalize_each,
+                    'norm_cap': norm_cap,
+                    'strength': strength,
+                }
+
+                cfg_path = None
+                if generated_cfg_dir is not None:
+                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    dump_yaml(cfg_path, run_cfg)
+
+                _emit_run_start(
+                    run_counter,
+                    total_runs,
+                    run_name=run_name,
+                    vocab=None if vocab is None else str(vocab),
+                    hookpoint=hookpoint,
+                    feature_set_label=feature_set_label,
+                    feature_indices=feature_indices,
+                    strength=strength,
+                    config_path=cfg_path,
+                )
+                try:
+                    result = run_clarq_eval(run_cfg)
+                    print(f"  finished: {run_name}")
+                finally:
+                    _release_cuda_memory()
+
+                summary_metrics = _load_single_row_csv(result.get('summary_path'))
+                run_metrics_df = _load_multi_row_csv(result.get('metrics_path'))
+
+                flattened_paths = _flatten_clarq_run_artifacts(
+                    sweep_dir=sweep_dir,
+                    run_name=run_name,
+                    result=result,
+                    storage=storage,
+                )
+
+                manifest_row = {
+                    'run_name': run_name,
+                    'vocab': vocab,
+                    'hookpoint': hookpoint,
+                    'module_path': module_path,
+                    'sae_file': sae_file,
+                    'sae_repo': sae_repo,
+                    'sae_id': sae_id,
+                    'feature_set_label': feature_set_label,
+                    'feature_indices': feature_indices,
+                    'feature_count': len(feature_indices),
+                    'feature_weights': feature_weights,
+                    'normalize_each': normalize_each,
+                    'norm_cap': norm_cap,
+                    'strength': strength,
+                    'config_path': str(cfg_path) if cfg_path is not None else None,
+                    'results_path': flattened_paths['results_path'],
+                    'metrics_path': flattened_paths['metrics_path'],
+                    'summary_path': flattened_paths['summary_path'],
+                    'report_path': flattened_paths['report_path'],
+                }
+                manifest_rows.append(manifest_row)
+
+                # Keep the existing dashboard/summary code working: for a multi-feature
+                # run, feature_index is a human-readable set label.
+                summary_metadata = dict(manifest_row)
+                summary_metadata['feature_index'] = feature_set_label
+                if summary_metrics:
+                    summary_rows.append(_merge_metadata(summary_metadata, summary_metrics))
+                if not run_metrics_df.empty:
+                    for _, metric_row in run_metrics_df.iterrows():
+                        metrics_rows.append(_merge_metadata(summary_metadata, metric_row.to_dict()))
+
+    manifest_df = pd.DataFrame(manifest_rows, columns=CLARQ_MULTI_FEATURE_MANIFEST_COLUMNS)
+    manifest_jsonl = sweep_dir / 'manifest.jsonl'
+    manifest_csv = sweep_dir / 'manifest.csv'
+    write_jsonl(manifest_jsonl, manifest_rows)
+    write_csv(manifest_csv, manifest_df)
+
+    if summary_rows:
+        summary_df = pd.DataFrame(summary_rows)
+        available_summary_cols = [c for c in CLARQ_COMPACT_SUMMARY_COLUMNS if c in summary_df.columns]
+        if available_summary_cols:
+            summary_df = summary_df.loc[:, available_summary_cols]
+        write_csv(sweep_dir / 'clarq_summary.csv', summary_df)
+    if metrics_rows:
+        metrics_df = pd.DataFrame(metrics_rows)
+        write_csv(sweep_dir / 'clarq_metrics.csv', metrics_df)
+
+    feature_dashboard_manifest: list[dict[str, Any]] = []
+    if storage.get('keep_clarq_feature_dashboards', True) and summary_rows:
+        feature_dashboard_manifest = _write_clarq_feature_dashboards(
+            sweep_dir=sweep_dir,
+            sweep_name=sweep_name,
+            summary_rows=summary_rows,
+            metrics_rows=metrics_rows,
+        )
+
+    if storage.get('cleanup_tmp_run_dirs', True):
+        _safe_rmtree(tmp_root)
+
+    print(f"\nSweep finished: {sweep_name}")
+    print(f'  manifest: {manifest_csv}')
+    if summary_rows:
+        print(f'  summary: {sweep_dir / "clarq_summary.csv"}')
+    if metrics_rows:
+        print(f'  metrics: {sweep_dir / "clarq_metrics.csv"}')
+    if feature_dashboard_manifest:
+        print(f'  feature dashboards: {sweep_dir / "clarq_feature_dashboards.html"}')
+    reports_dir = sweep_dir / 'reports'
+    if reports_dir.exists() and any(reports_dir.glob('*.html')):
+        print(f'  per-run reports: {reports_dir}')
+
+
 if __name__ == '__main__':
     args = parse_args()
     sweep_cfg = load_yaml(args.config)
@@ -1266,8 +1637,12 @@ if __name__ == '__main__':
             _run_clarq_single_feature_strength_sweep(sweep_cfg, base_cfg)
         else:
             _run_single_feature_strength_sweep(sweep_cfg, base_cfg)
+    elif sweep_mode in {'multi_feature_strength', 'feature_set_strength', 'cluster_feature_strength'}:
+        if not is_clarq_base:
+            raise ValueError('multi_feature_strength is currently implemented for ClarQ base configs.')
+        _run_clarq_multi_feature_strength_sweep(sweep_cfg, base_cfg)
     else:
         raise ValueError(
-            'Unsupported sweep config. Use either legacy sweep.parameter/sweep.values '
-            'or sweep.mode=single_feature_strength with sweep.strengths and sweep.groups.'
+            'Unsupported sweep config. Use either legacy sweep.parameter/sweep.values, '
+            'sweep.mode=single_feature_strength, or sweep.mode=multi_feature_strength.'
         )

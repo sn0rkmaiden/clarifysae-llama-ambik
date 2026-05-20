@@ -1,0 +1,36 @@
+experiment_name: gemma_2b_old_ambik_cluster_strength_sweep_clarq
+base_config: configs/clarq/gemma_2b_clarq_sweep_base.yaml
+
+# Exact old AmbiK cluster-steering sets recovered from
+# SAE-Reasoning/extraction/clusters/2b_allvocabs_l12_thr0.6_nclust3/features_clustered.csv.
+# Each feature set is the top-N features in that old cluster, ranked by output_score_agg,
+# matching old result filenames such as
+# ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster0_multi10_str1.0.json.
+
+sweep:
+  mode: multi_feature_strength
+  strengths: [1.0, 3.0, 5.0, 10.0]
+  groups:
+    - vocab: old_ambik_clusters
+      hookpoint: blocks.12.hook_resid_post
+      module_path: model.layers.12
+      sae_repo: gemma-2b-it-res-jb
+      sae_id: blocks.12.hook_resid_post
+      normalize_each: false
+      norm_cap: null
+      feature_sets:
+        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster0_multi10
+          features: [557, 320, 439, 375, 700, 688, 261, 791, 165, 210]
+        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster1_multi10
+          features: [492, 505, 103, 231, 811, 336, 132, 79, 744, 379]
+        - label: ambik_cluster_2b_allvocabs_l12_thr0.6_nclust3_cluster2_multi10
+          features: [432, 538, 802, 724, 709, 555, 285, 451, 621, 80]
+  storage:
+    layout: flat
+    keep_generated_configs: false
+    keep_results: true
+    keep_clarq_metrics: true
+    keep_clarq_summary: true
+    keep_clarq_report: true
+    keep_clarq_feature_dashboards: true
+    cleanup_tmp_run_dirs: true

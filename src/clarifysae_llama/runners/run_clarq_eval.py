@@ -135,6 +135,34 @@ def _build_seeker_backend(config: dict[str, Any]):
 
 
 def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dict[str, Any]:
+    steering_cfg = config.get('steering') or {}
+    steering_enabled = bool(steering_cfg.get('enabled', False))
+    feature_indices = [int(x) for x in steering_cfg.get('feature_indices', [])] if steering_enabled else []
+    run_metadata = config.get('run_metadata') or {}
+
+    steering_meta = None
+    if steering_enabled:
+        steering_meta = {
+            # Backwards-compatible scalar field used by older ClarQ tables.
+            'feature': feature_indices[0] if len(feature_indices) == 1 else None,
+            # New multi-feature fields.
+            'feature_indices': feature_indices,
+            'feature_count': len(feature_indices),
+            'feature_set_label': run_metadata.get('feature_set_label'),
+            'feature_weights': steering_cfg.get('feature_weights'),
+            'normalize_each': steering_cfg.get('normalize_each'),
+            'norm_cap': steering_cfg.get('norm_cap'),
+            'strength': steering_cfg.get('strength'),
+            'hookpoint': steering_cfg.get('hookpoint'),
+            'module_path': steering_cfg.get('module_path'),
+            'loader': steering_cfg.get('loader'),
+            'sae_repo': steering_cfg.get('sae_repo'),
+            'sae_file': steering_cfg.get('sae_file'),
+            'sae_id': steering_cfg.get('sae_id'),
+            'mode': steering_cfg.get('mode'),
+            'max_act': (steering_cfg.get('runtime') or {}).get('max_act'),
+        }
+
     return {
         'task_data_path': clarq_cfg['dataset_path'],
         'language': 'En' if 'English' in clarq_cfg['dataset_path'] else 'Ch',
@@ -144,20 +172,7 @@ def _conversation_meta(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> dic
         'seeker_agent_llm': config['model']['name'],
         'provider_agent_llm': config['provider_model']['name'],
         'multi_info_provider_agent': bool(clarq_cfg.get('multi_info_provider_agent', False)),
-        'steering': {
-            'feature': (config.get('steering') or {}).get('feature_indices', [None])[0],
-            'strength': (config.get('steering') or {}).get('strength'),
-            'hookpoint': (config.get('steering') or {}).get('hookpoint'),
-            'module_path': (config.get('steering') or {}).get('module_path'),
-            'loader': (config.get('steering') or {}).get('loader'),
-            'sae_repo': (config.get('steering') or {}).get('sae_repo'),
-            'sae_file': (config.get('steering') or {}).get('sae_file'),
-            'sae_id': (config.get('steering') or {}).get('sae_id'),
-            'mode': (config.get('steering') or {}).get('mode'),
-            'max_act': ((config.get('steering') or {}).get('runtime') or {}).get('max_act'),
-        }
-        if config.get('steering', {}).get('enabled', False)
-        else None,
+        'steering': steering_meta,
         'judge_model': (config.get('judge_model') or {}).get('name'),
     }
 
