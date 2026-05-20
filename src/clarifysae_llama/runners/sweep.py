@@ -125,6 +125,15 @@ def _sanitize_token(value: Any) -> str:
     return token.strip('_') or 'value'
 
 
+def _artifact_file_stem(value: Any, max_len: int = 120) -> str:
+    token = _sanitize_token(value)
+    if len(token) <= max_len:
+        return token
+    digest = hashlib.md5(token.encode('utf-8')).hexdigest()[:10]
+    keep = max(1, max_len - len(digest) - 2)
+    return f'{token[:keep].rstrip("_")}__{digest}'
+
+
 def _short_hookpoint(hookpoint: str) -> str:
     match = re.fullmatch(r'layers\.(\d+)\.(.+)', hookpoint)
     if match:
@@ -857,7 +866,7 @@ def _flatten_run_artifacts(
     if storage.get('keep_predictions', False):
         kept_paths['predictions_path'] = _replace_file(
             predictions_path,
-            predictions_dir / f'{run_name}__predictions.jsonl',
+            predictions_dir / f'{_artifact_file_stem(run_name)}__predictions.jsonl',
         )
     else:
         _safe_unlink(predictions_path)
@@ -897,7 +906,7 @@ def _flatten_run_artifacts(
     if storage.get('keep_aggregate_metrics', False):
         kept_paths['aggregate_metrics_path'] = _replace_file(
             aggregate_metrics_path,
-            metrics_dir / f'{run_name}__aggregate_metrics.csv',
+            metrics_dir / f'{_artifact_file_stem(run_name)}__aggregate_metrics.csv',
         )
     else:
         _safe_unlink(aggregate_metrics_path)
@@ -905,7 +914,7 @@ def _flatten_run_artifacts(
     if storage.get('keep_category_metrics', False):
         kept_paths['category_metrics_path'] = _replace_file(
             category_metrics_path,
-            metrics_dir / f'{run_name}__category_metrics.csv',
+            metrics_dir / f'{_artifact_file_stem(run_name)}__category_metrics.csv',
         )
     else:
         _safe_unlink(category_metrics_path)
@@ -954,7 +963,7 @@ def _flatten_clarq_run_artifacts(
     if storage.get('keep_results', True):
         kept_paths['results_path'] = _replace_file(
             results_path,
-            results_dir / f'{run_name}__clarq_results.json',
+            results_dir / f'{_artifact_file_stem(run_name)}__clarq_results.json',
         )
     else:
         _safe_unlink(results_path)
@@ -962,7 +971,7 @@ def _flatten_clarq_run_artifacts(
     if storage.get('keep_clarq_metrics', True):
         kept_paths['metrics_path'] = _replace_file(
             metrics_path,
-            metrics_dir / f'{run_name}__clarq_metrics.csv',
+            metrics_dir / f'{_artifact_file_stem(run_name)}__clarq_metrics.csv',
         )
     else:
         _safe_unlink(metrics_path)
@@ -970,7 +979,7 @@ def _flatten_clarq_run_artifacts(
     if storage.get('keep_clarq_summary', True):
         kept_paths['summary_path'] = _replace_file(
             summary_path,
-            summaries_dir / f'{run_name}__clarq_summary.csv',
+            summaries_dir / f'{_artifact_file_stem(run_name)}__clarq_summary.csv',
         )
     else:
         _safe_unlink(summary_path)
@@ -978,7 +987,7 @@ def _flatten_clarq_run_artifacts(
     if storage.get('keep_clarq_report', True):
         kept_paths['report_path'] = _replace_file(
             report_path,
-            reports_dir / f'{run_name}__clarq_report.html',
+            reports_dir / f'{_artifact_file_stem(run_name)}__clarq_report.html',
         )
     else:
         _safe_unlink(report_path)
@@ -1019,7 +1028,7 @@ def _run_legacy_sweep(sweep_cfg: dict[str, Any], base_cfg: dict[str, Any]) -> No
 
         cfg_path = None
         if generated_cfg_dir is not None:
-            cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+            cfg_path = generated_cfg_dir / f'{_artifact_file_stem(run_name)}.yaml'
             dump_yaml(cfg_path, run_cfg)
 
         _emit_run_start(run_idx, len(values), run_name=run_name, config_path=cfg_path)
@@ -1139,7 +1148,8 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
                     )
                 seen_run_names.add(run_name)
 
-                run_cfg['experiment_name'] = run_name
+                artifact_run_name = _artifact_file_stem(run_name)
+                run_cfg['experiment_name'] = artifact_run_name
                 run_cfg['run_metadata'] = {
                     'sweep_name': sweep_name,
                     'sweep_mode': 'single_feature_strength',
@@ -1156,7 +1166,7 @@ def _run_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg: dict
 
                 cfg_path = None
                 if generated_cfg_dir is not None:
-                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    cfg_path = generated_cfg_dir / f'{_artifact_file_stem(run_name)}.yaml'
                     dump_yaml(cfg_path, run_cfg)
 
                 _emit_run_start(
@@ -1298,7 +1308,8 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
                     )
                 seen_run_names.add(run_name)
 
-                run_cfg['experiment_name'] = run_name
+                artifact_run_name = _artifact_file_stem(run_name)
+                run_cfg['experiment_name'] = artifact_run_name
                 run_cfg['run_metadata'] = {
                     'sweep_name': sweep_name,
                     'sweep_mode': 'clarq_single_feature_strength',
@@ -1315,7 +1326,7 @@ def _run_clarq_single_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg
 
                 cfg_path = None
                 if generated_cfg_dir is not None:
-                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    cfg_path = generated_cfg_dir / f'{_artifact_file_stem(run_name)}.yaml'
                     dump_yaml(cfg_path, run_cfg)
 
                 _emit_run_start(
@@ -1494,7 +1505,8 @@ def _run_clarq_multi_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg:
                     )
                 seen_run_names.add(run_name)
 
-                run_cfg['experiment_name'] = run_name
+                artifact_run_name = _artifact_file_stem(run_name)
+                run_cfg['experiment_name'] = artifact_run_name
                 run_cfg['run_metadata'] = {
                     'sweep_name': sweep_name,
                     'sweep_mode': 'clarq_multi_feature_strength',
@@ -1517,7 +1529,7 @@ def _run_clarq_multi_feature_strength_sweep(sweep_cfg: dict[str, Any], base_cfg:
 
                 cfg_path = None
                 if generated_cfg_dir is not None:
-                    cfg_path = generated_cfg_dir / f'{run_name}.yaml'
+                    cfg_path = generated_cfg_dir / f'{_artifact_file_stem(run_name)}.yaml'
                     dump_yaml(cfg_path, run_cfg)
 
                 _emit_run_start(

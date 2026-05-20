@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import os
 import re
 import time
@@ -183,13 +184,22 @@ def _slugify_filename_part(value: str) -> str:
     return slug or 'run'
 
 
+def _short_filename_stem(stem: str, max_len: int = 120) -> str:
+    stem = _slugify_filename_part(stem)
+    if len(stem) <= max_len:
+        return stem
+    digest = hashlib.md5(stem.encode('utf-8')).hexdigest()[:10]
+    keep = max(1, max_len - len(digest) - 2)
+    return f'{stem[:keep].rstrip("._-")}__{digest}'
+
+
 def _build_artifact_basename(config: dict[str, Any], clarq_cfg: dict[str, Any]) -> str:
     experiment_slug = _slugify_filename_part(str(config.get('experiment_name', 'clarq_eval')))
     mode = 'chat' if clarq_cfg.get('player_chat_mode', False) else 'comp'
     eval_set = _slugify_filename_part(str(clarq_cfg.get('evaluation_set', '0-25')))
     steering_enabled = bool((config.get('steering') or {}).get('enabled', False))
     steering_tag = 'steered' if steering_enabled else 'baseline'
-    return f'{experiment_slug}__{mode}__evalset_{eval_set}__{steering_tag}'
+    return _short_filename_stem(f'{experiment_slug}__{mode}__evalset_{eval_set}__{steering_tag}')
 
 
 def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
