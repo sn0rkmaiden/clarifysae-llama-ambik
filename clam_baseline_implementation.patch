@@ -1,0 +1,662 @@
+diff --git a/configs/baselines/clam_ambik_gemma2_9b.yaml b/configs/baselines/clam_ambik_gemma2_9b.yaml
+new file mode 100644
+index 0000000..0e33b26
+--- /dev/null
++++ b/configs/baselines/clam_ambik_gemma2_9b.yaml
+@@ -0,0 +1,49 @@
++experiment_name: clam_ambik_gemma2_9b
++seed: 42
++
++model:
++  name: google/gemma-2-9b-it
++  backend: hf
++  torch_dtype: bfloat16
++  device_map: auto
++  attn_implementation: null
++
++# Used only for stage-2 question generation. Stage 1 uses candidate scoring.
++generation:
++  max_new_tokens: 48
++  do_sample: false
++  temperature: 0.0
++  top_p: 1.0
++
++prompting:
++  use_chat_template: auto
++  system_prompt: ""
++
++steering:
++  enabled: false
++
++batching:
++  batch_size: 1
++
++dataset:
++  # Use a held-out paired AmbiK CSV containing both ambiguous_task and
++  # unambiguous_direct. Do not use the examples used to build the demo file.
++  path: data/raw/ambik/AmbiK_data.csv
++  limit: 100
++  include_unambiguous_pairs: true
++
++clam:
++  demonstrations_path: data/prompts/clam_ambik_demos.example.json
++  candidate_text:
++    ambiguous: " AMBIGUOUS"
++    clear: " CLEAR"
++  decision_threshold: 0.5
++  length_normalize_scores: true
++
++output:
++  root_dir: outputs
++
++evaluation:
++  embed_threshold: 0.75
++  enable_nli: false
++  brevity_max: 1
+diff --git a/data/prompts/clam_ambik_demos.example.json b/data/prompts/clam_ambik_demos.example.json
+new file mode 100644
+index 0000000..1caab1d
+--- /dev/null
++++ b/data/prompts/clam_ambik_demos.example.json
+@@ -0,0 +1,24 @@
++[
++  {
++    "environment": "a large mixing bowl, a small mixing bowl, cabbage, cucumber, and carrot",
++    "task": "Chop the cabbage, cucumber, and carrot and place them in a mixing bowl.",
++    "label": "AMBIGUOUS",
++    "question": "Should I place the chopped vegetables in the large or the small mixing bowl?"
++  },
++  {
++    "environment": "a large mixing bowl, a small mixing bowl, cabbage, cucumber, and carrot",
++    "task": "Chop the cabbage, cucumber, and carrot and place them in the large mixing bowl.",
++    "label": "CLEAR"
++  },
++  {
++    "environment": "a ceramic plate, a microwave-safe plate, buffalo wings, and a microwave",
++    "task": "Heat the buffalo wings in the microwave on a plate.",
++    "label": "AMBIGUOUS",
++    "question": "Which plate should I use to heat the buffalo wings in the microwave?"
++  },
++  {
++    "environment": "a ceramic plate, a microwave-safe plate, buffalo wings, and a microwave",
++    "task": "Heat the buffalo wings in the microwave on the microwave-safe plate.",
++    "label": "CLEAR"
++  }
++]
+diff --git a/src/clarifysae_llama/backends/hf_backend.py b/src/clarifysae_llama/backends/hf_backend.py
+index 0b64a7d..1365778 100644
+--- a/src/clarifysae_llama/backends/hf_backend.py
++++ b/src/clarifysae_llama/backends/hf_backend.py
+@@ -210,6 +210,84 @@ class HFCausalBackend:
+         prompt_width = int(inputs['input_ids'].shape[1])
+         return self._decode_new_tokens(self.tokenizer, output[0], prompt_width)
+ 
++
++
++    @torch.inference_mode()
++    def score_candidate_continuations_batch(
++        self,
++        prompts: list[str],
++        candidates: list[str],
++        *,
++        length_normalize: bool = True,
++    ) -> list[list[float]]:
++        """Score fixed candidate continuations after each prompt.
++
++        The return value has shape ``[len(prompts), len(candidates)]``. Each
++        score is the conditional log-probability of the candidate tokens given
++        the formatted prompt. Mean token log-probability is used by default so
++        candidates with different token lengths remain comparable.
++        """
++        if not prompts:
++            return []
++        if not candidates:
++            raise ValueError('At least one candidate continuation is required.')
++
++        formatted_prompts = self._format_prompts(prompts)
++        examples: list[tuple[int, int, list[int], list[int]]] = []
++        for prompt_idx, formatted_prompt in enumerate(formatted_prompts):
++            prompt_ids = self.tokenizer(
++                formatted_prompt,
++                add_special_tokens=False,
++            )['input_ids']
++            if not prompt_ids:
++                raise ValueError('Formatted prompt tokenized to an empty sequence.')
++
++            for candidate_idx, candidate in enumerate(candidates):
++                candidate_ids = self.tokenizer(
++                    candidate,
++                    add_special_tokens=False,
++                )['input_ids']
++                if not candidate_ids:
++                    raise ValueError(f'Candidate {candidate!r} tokenized to an empty sequence.')
++                examples.append((prompt_idx, candidate_idx, prompt_ids, candidate_ids))
++
++        pad_id = int(self.tokenizer.pad_token_id)
++        max_len = max(len(prompt_ids) + len(candidate_ids) for _, _, prompt_ids, candidate_ids in examples)
++        input_rows: list[list[int]] = []
++        mask_rows: list[list[int]] = []
++        label_rows: list[list[int]] = []
++
++        for _, _, prompt_ids, candidate_ids in examples:
++            full_ids = [*prompt_ids, *candidate_ids]
++            left_pad = max_len - len(full_ids)
++            input_rows.append([pad_id] * left_pad + full_ids)
++            mask_rows.append([0] * left_pad + [1] * len(full_ids))
++            label_rows.append([-100] * (left_pad + len(prompt_ids)) + candidate_ids)
++
++        device = self._model_input_device()
++        input_ids = torch.tensor(input_rows, dtype=torch.long, device=device)
++        attention_mask = torch.tensor(mask_rows, dtype=torch.long, device=device)
++        labels = torch.tensor(label_rows, dtype=torch.long, device=device)
++
++        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
++        logits = outputs.logits[:, :-1, :]
++        shifted_labels = labels[:, 1:]
++        valid = shifted_labels.ne(-100)
++        safe_labels = shifted_labels.masked_fill(~valid, 0)
++        token_log_probs = torch.log_softmax(logits.float(), dim=-1)
++        selected = token_log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
++        selected = selected.masked_fill(~valid, 0.0)
++
++        sequence_scores = selected.sum(dim=-1)
++        if length_normalize:
++            lengths = valid.sum(dim=-1).clamp_min(1)
++            sequence_scores = sequence_scores / lengths
++
++        matrix = [[float('-inf')] * len(candidates) for _ in prompts]
++        for example_idx, (prompt_idx, candidate_idx, _, _) in enumerate(examples):
++            matrix[prompt_idx][candidate_idx] = float(sequence_scores[example_idx].item())
++        return matrix
++
+     @torch.inference_mode()
+     def generate_batch(self, prompts: list[str]) -> list[str]:
+         prompts = self._format_prompts(prompts)
+diff --git a/src/clarifysae_llama/data/ambik_loader.py b/src/clarifysae_llama/data/ambik_loader.py
+index f263309..40330c5 100644
+--- a/src/clarifysae_llama/data/ambik_loader.py
++++ b/src/clarifysae_llama/data/ambik_loader.py
+@@ -60,3 +60,67 @@ def load_ambik_clarification_dataset(path: str | Path, limit: int | None = None)
+ 
+ # Backward-compatible alias used by existing configs / imports.
+ load_ambik_no_help_dataset = load_ambik_clarification_dataset
++
++
++def load_ambik_selective_dataset(
++    path: str | Path,
++    limit_pairs: int | None = None,
++    *,
++    include_unambiguous_pairs: bool = True,
++) -> pd.DataFrame:
++    """Load AmbiK as a mixed ambiguous/clear selective-clarification set.
++
++    Each source row contributes its ``ambiguous_task``. When
++    ``include_unambiguous_pairs`` is true, the paired ``unambiguous_direct``
++    instruction is also included. This is required to evaluate CLAM's
++    selectivity and over-asking behavior rather than only question quality on
++    already-known ambiguous inputs.
++    """
++    df = pd.read_csv(path)
++    df = _ensure_id_column(df)
++
++    required = set(REQUIRED_COLUMNS)
++    if include_unambiguous_pairs:
++        required.add('unambiguous_direct')
++    missing = required.difference(df.columns)
++    if missing:
++        raise ValueError(
++            'Missing columns required for CLAM selective evaluation: '
++            f'{sorted(missing)}. Use the paired AmbiK CSV, or set '
++            'dataset.include_unambiguous_pairs=false for an ambiguous-only '
++            'diagnostic run.'
++        )
++
++    if limit_pairs is not None:
++        df = df.head(limit_pairs).copy()
++
++    rows: list[dict] = []
++    for _, row in df.iterrows():
++        source_id = str(row['id'])
++        common = {
++            'source_id': source_id,
++            'environment_full': str(row['environment_full']),
++            'gold_answer': str(row.get('answer', '') or ''),
++            'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
++        }
++        rows.append({
++            **common,
++            'id': f'{source_id}:ambiguous',
++            'variant': 'ambiguous',
++            'task': str(row['ambiguous_task']),
++            'ambiguity_type': str(row['ambiguity_type']),
++            'gold_ambiguous': True,
++            'gold_question': str(row.get('question', '') or ''),
++        })
++        if include_unambiguous_pairs:
++            rows.append({
++                **common,
++                'id': f'{source_id}:clear',
++                'variant': 'clear',
++                'task': str(row['unambiguous_direct']),
++                'ambiguity_type': 'unambiguous_direct',
++                'gold_ambiguous': False,
++                'gold_question': '',
++            })
++
++    return pd.DataFrame(rows)
+diff --git a/src/clarifysae_llama/data/clam_prompting.py b/src/clarifysae_llama/data/clam_prompting.py
+new file mode 100644
+index 0000000..c6b4c9b
+--- /dev/null
++++ b/src/clarifysae_llama/data/clam_prompting.py
+@@ -0,0 +1,64 @@
++from __future__ import annotations
++
++from typing import Any
++
++
++CLASSIFICATION_HEADER = """You are evaluating instructions for a kitchen robot.
++Decide whether the instruction is ambiguous in the described environment.
++
++AMBIGUOUS means that multiple plausible task executions remain and the missing choice should be requested from the user before acting.
++CLEAR means that the intended execution is sufficiently specified by the instruction, environment, and ordinary task knowledge.
++
++Return only one label: AMBIGUOUS or CLEAR.
++"""
++
++
++QUESTION_HEADER = """You are a kitchen robot. The instruction below has been classified as ambiguous.
++Ask exactly one concise clarification question that identifies the missing choice needed to execute the task correctly.
++Ground the question in the described environment and mention concrete alternatives when useful.
++Return only the question. Do not add an answer, explanation, list, numbering, or JSON.
++"""
++
++
++def _format_case(environment: str, task: str) -> str:
++    return f"Environment: {environment}\nInstruction: {task}"
++
++
++def build_clam_classification_prompt(
++    *,
++    environment: str,
++    task: str,
++    demonstrations: list[dict[str, Any]],
++) -> str:
++    parts = [CLASSIFICATION_HEADER]
++    for demo in demonstrations:
++        label = str(demo['label']).strip().upper()
++        if label not in {'AMBIGUOUS', 'CLEAR'}:
++            raise ValueError(f"Unsupported CLAM demonstration label: {label!r}")
++        parts.append(
++            _format_case(str(demo['environment']), str(demo['task']))
++            + f"\nLabel: {label}\n"
++        )
++    parts.append(_format_case(environment, task) + "\nLabel:")
++    return "\n".join(parts)
++
++
++def build_clam_question_prompt(
++    *,
++    environment: str,
++    task: str,
++    demonstrations: list[dict[str, Any]],
++) -> str:
++    parts = [QUESTION_HEADER]
++    for demo in demonstrations:
++        if str(demo.get('label', '')).strip().upper() != 'AMBIGUOUS':
++            continue
++        question = str(demo.get('question', '')).strip()
++        if not question:
++            continue
++        parts.append(
++            _format_case(str(demo['environment']), str(demo['task']))
++            + f"\nClarification question: {question}\n"
++        )
++    parts.append(_format_case(environment, task) + "\nClarification question:")
++    return "\n".join(parts)
+diff --git a/src/clarifysae_llama/eval/clam_metrics.py b/src/clarifysae_llama/eval/clam_metrics.py
+new file mode 100644
+index 0000000..7b232e9
+--- /dev/null
++++ b/src/clarifysae_llama/eval/clam_metrics.py
+@@ -0,0 +1,96 @@
++from __future__ import annotations
++
++from typing import Any
++
++import pandas as pd
++
++
++def binary_auroc(labels: list[bool], scores: list[float]) -> float | None:
++    """Compute AUROC from ranks without adding a scikit-learn dependency."""
++    if len(labels) != len(scores):
++        raise ValueError('labels and scores must have the same length')
++    n_pos = sum(bool(label) for label in labels)
++    n_neg = len(labels) - n_pos
++    if n_pos == 0 or n_neg == 0:
++        return None
++
++    order = sorted(range(len(scores)), key=lambda idx: scores[idx])
++    ranks = [0.0] * len(scores)
++    start = 0
++    while start < len(order):
++        end = start + 1
++        while end < len(order) and scores[order[end]] == scores[order[start]]:
++            end += 1
++        avg_rank = (start + 1 + end) / 2.0
++        for pos in range(start, end):
++            ranks[order[pos]] = avg_rank
++        start = end
++
++    sum_pos_ranks = sum(rank for rank, label in zip(ranks, labels) if label)
++    return float((sum_pos_ranks - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
++
++
++def add_clam_aggregate_metrics(
++    aggregate_df: pd.DataFrame,
++    example_metrics: pd.DataFrame,
++) -> pd.DataFrame:
++    if aggregate_df.empty or example_metrics.empty:
++        return aggregate_df
++
++    rows = example_metrics.to_dict(orient='records')
++    ambiguous_rows = [row for row in rows if bool(row['gold_ambiguous'])]
++    clear_rows = [row for row in rows if not bool(row['gold_ambiguous'])]
++
++    selective_success_values: list[float] = []
++    for row in rows:
++        if bool(row['gold_ambiguous']):
++            selective_success_values.append(1.0 if bool(row['resolved_proxy_any']) else 0.0)
++        else:
++            selective_success_values.append(1.0 if not bool(row['asked_question']) else 0.0)
++
++    result = aggregate_df.copy()
++    result.loc[0, 'clam_selective_success'] = sum(selective_success_values) / len(selective_success_values)
++    result.loc[0, 'resolved_proxy_rate_ambiguous'] = (
++        sum(1 for row in ambiguous_rows if bool(row['resolved_proxy_any'])) / len(ambiguous_rows)
++        if ambiguous_rows else None
++    )
++    result.loc[0, 'question_similarity_asked_ambiguous'] = (
++        sum(float(row['model_question_best_similarity']) for row in ambiguous_rows if bool(row['asked_question']))
++        / sum(1 for row in ambiguous_rows if bool(row['asked_question']))
++        if any(bool(row['asked_question']) for row in ambiguous_rows) else None
++    )
++    result.loc[0, 'oracle_gate_resolved_proxy_rate_ambiguous'] = (
++        sum(1 for row in ambiguous_rows if bool(row.get('oracle_gate_resolved_proxy_any'))) / len(ambiguous_rows)
++        if ambiguous_rows else None
++    )
++    result.loc[0, 'oracle_gate_question_similarity_ambiguous'] = (
++        sum(float(row.get('oracle_gate_question_similarity', 0.0)) for row in ambiguous_rows) / len(ambiguous_rows)
++        if ambiguous_rows else None
++    )
++    result.loc[0, 'classification_auroc'] = binary_auroc(
++        [bool(row['gold_ambiguous']) for row in rows],
++        [float(row['ambiguity_probability']) for row in rows],
++    )
++    result.loc[0, 'n_ambiguous'] = len(ambiguous_rows)
++    result.loc[0, 'n_clear'] = len(clear_rows)
++    return result
++
++
++def clean_single_question(raw_output: Any) -> str:
++    text = str(raw_output or '').strip()
++    if not text:
++        return ''
++
++    for prefix in ('```text', '```', 'Question:', 'Clarification question:', 'Answer:'):
++        if text.lower().startswith(prefix.lower()):
++            text = text[len(prefix):].strip()
++
++    first_line = next((line.strip() for line in text.splitlines() if line.strip()), '')
++    first_line = first_line.lstrip('-*• ').strip()
++    while first_line and first_line[0].isdigit():
++        first_line = first_line[1:].lstrip('.): ').strip()
++    first_line = first_line.strip('`"\' ')
++
++    if '?' in first_line:
++        first_line = first_line[: first_line.index('?') + 1]
++    return first_line.strip()
+diff --git a/src/clarifysae_llama/runners/run_clam_eval.py b/src/clarifysae_llama/runners/run_clam_eval.py
+new file mode 100644
+index 0000000..815f553
+--- /dev/null
++++ b/src/clarifysae_llama/runners/run_clam_eval.py
+@@ -0,0 +1,238 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++import pandas as pd
++import torch
++from tqdm import tqdm
++
++from clarifysae_llama.backends.hf_backend import HFCausalBackend
++from clarifysae_llama.config import load_yaml
++from clarifysae_llama.data.ambik_loader import load_ambik_selective_dataset
++from clarifysae_llama.data.clam_prompting import (
++    build_clam_classification_prompt,
++    build_clam_question_prompt,
++)
++from clarifysae_llama.eval.clam_metrics import add_clam_aggregate_metrics, clean_single_question
++from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics
++from clarifysae_llama.eval.reporting import save_metric_tables
++from clarifysae_llama.utils.io import ensure_dir, write_json, write_jsonl
++from clarifysae_llama.utils.seed import set_seed
++
++
++def _load_demonstrations(path: str | Path) -> list[dict[str, Any]]:
++    with open(path, 'r', encoding='utf-8') as handle:
++        payload = json.load(handle)
++    if not isinstance(payload, list):
++        raise ValueError('CLAM demonstrations file must contain a JSON list.')
++    return [dict(item) for item in payload]
++
++
++def _softmax_pair(ambiguous_score: float, clear_score: float) -> float:
++    values = torch.tensor([ambiguous_score, clear_score], dtype=torch.float64)
++    return float(torch.softmax(values, dim=0)[0].item())
++
++
++def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) -> list[dict[str, Any]]:
++    rows: list[dict[str, Any]] = []
++    for _, item in dataset.iterrows():
++        environment = str(item['environment_full'])
++        task = str(item['task'])
++        rows.append({
++            **item.to_dict(),
++            'classification_prompt': build_clam_classification_prompt(
++                environment=environment,
++                task=task,
++                demonstrations=demonstrations,
++            ),
++            'question_prompt': build_clam_question_prompt(
++                environment=environment,
++                task=task,
++                demonstrations=demonstrations,
++            ),
++        })
++    return rows
++
++
++def _batched(items: list[Any], batch_size: int):
++    for start in range(0, len(items), batch_size):
++        yield items[start:start + batch_size]
++
++
++def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
++    set_seed(int(config.get('seed', 42)))
++    experiment_name = str(config['experiment_name'])
++    root_dir = Path(config['output']['root_dir'])
++    run_dir = ensure_dir(root_dir / experiment_name)
++    pred_dir = ensure_dir(run_dir / 'predictions')
++
++    clam_cfg = config.get('clam', {})
++    demonstrations = _load_demonstrations(clam_cfg['demonstrations_path'])
++    include_pairs = bool(config.get('dataset', {}).get('include_unambiguous_pairs', True))
++    dataset = load_ambik_selective_dataset(
++        config['dataset']['path'],
++        limit_pairs=config['dataset'].get('limit'),
++        include_unambiguous_pairs=include_pairs,
++    )
++    rows = _build_rows(dataset, demonstrations)
++
++    config = dict(config)
++    config['steering'] = {'enabled': False}
++    backend = HFCausalBackend(config)
++
++    batch_size = int(config.get('batching', {}).get('batch_size', 1))
++    threshold = float(clam_cfg.get('decision_threshold', 0.5))
++    candidate_text = clam_cfg.get('candidate_text', {})
++    ambiguous_candidate = str(candidate_text.get('ambiguous', ' AMBIGUOUS'))
++    clear_candidate = str(candidate_text.get('clear', ' CLEAR'))
++    candidates = [ambiguous_candidate, clear_candidate]
++    length_normalize = bool(clam_cfg.get('length_normalize_scores', True))
++
++    print(f'\n=== run_clam_eval :: {experiment_name} ===')
++    print(f'pairs: {len(dataset) // 2 if include_pairs else len(dataset)} | examples: {len(dataset)}')
++    print(f'decision threshold: {threshold} | candidates: {candidates}')
++
++    classification_batches = list(_batched(rows, batch_size))
++    for chunk in tqdm(classification_batches, desc='CLAM stage 1: classify', unit='batch'):
++        prompts = [row['classification_prompt'] for row in chunk]
++        scores = backend.score_candidate_continuations_batch(
++            prompts,
++            candidates,
++            length_normalize=length_normalize,
++        )
++        for row, (ambiguous_score, clear_score) in zip(chunk, scores):
++            probability = _softmax_pair(ambiguous_score, clear_score)
++            row['ambiguity_score_ambiguous'] = ambiguous_score
++            row['ambiguity_score_clear'] = clear_score
++            row['ambiguity_probability'] = probability
++            row['predicted_ambiguous'] = bool(probability >= threshold)
++
++    # Generate stage-2 questions for every gold-ambiguous example. This gives
++    # both (a) the end-to-end CLAM result, gated by the predicted label, and
++    # (b) an oracle-gated question-generation diagnostic that is directly
++    # comparable to ClarifySAE's ambiguity-known evaluation setting.
++    question_rows = [row for row in rows if bool(row['gold_ambiguous']) or row['predicted_ambiguous']]
++    question_batches = list(_batched(question_rows, batch_size))
++    for chunk in tqdm(question_batches, desc='CLAM stage 2: ask', unit='batch'):
++        raw_outputs = backend.generate_batch([row['question_prompt'] for row in chunk])
++        for row, raw_output in zip(chunk, raw_outputs):
++            cleaned = clean_single_question(raw_output)
++            row['raw_oracle_question_output'] = raw_output if bool(row['gold_ambiguous']) else ''
++            row['oracle_generated_question'] = cleaned if bool(row['gold_ambiguous']) else ''
++            row['raw_question_output'] = raw_output if row['predicted_ambiguous'] else ''
++            row['generated_question'] = cleaned if row['predicted_ambiguous'] else ''
++
++    for row in rows:
++        row.setdefault('raw_question_output', '')
++        row.setdefault('generated_question', '')
++        row.setdefault('raw_oracle_question_output', '')
++        row.setdefault('oracle_generated_question', '')
++
++    embed_threshold = float(config.get('evaluation', {}).get('embed_threshold', 0.75))
++    nli_threshold = config.get('evaluation', {}).get('nli_threshold')
++    enable_nli = bool(config.get('evaluation', {}).get('enable_nli', False))
++    brevity_max = int(config.get('evaluation', {}).get('brevity_max', 1))
++
++    prediction_rows: list[dict[str, Any]] = []
++    for row in rows:
++        questions = [row['generated_question']] if row['generated_question'] else []
++        metrics = compute_example_metrics(
++            ambiguity_type=str(row['ambiguity_type']),
++            gold_question=str(row['gold_question']),
++            model_questions=questions,
++            predicted_ambiguous=bool(row['predicted_ambiguous']),
++            embed_threshold=embed_threshold,
++            nli_threshold=nli_threshold,
++            enable_nli=enable_nli,
++        )
++        # The explicit pair label is authoritative for this runner.
++        metrics['gold_ambiguous'] = bool(row['gold_ambiguous'])
++        metrics['ambiguity_decision_correct'] = bool(
++            row['predicted_ambiguous'] == row['gold_ambiguous']
++        )
++        oracle_questions = [row['oracle_generated_question']] if row['oracle_generated_question'] else []
++        oracle_metrics = compute_example_metrics(
++            ambiguity_type=str(row['ambiguity_type']),
++            gold_question=str(row['gold_question']),
++            model_questions=oracle_questions,
++            predicted_ambiguous=True if bool(row['gold_ambiguous']) else False,
++            embed_threshold=embed_threshold,
++            nli_threshold=nli_threshold,
++            enable_nli=enable_nli,
++        )
++
++        prediction_rows.append({
++            'id': row['id'],
++            'source_id': row['source_id'],
++            'variant': row['variant'],
++            'ambiguity_type': row['ambiguity_type'],
++            'environment': row['environment_full'],
++            'instruction': row['task'],
++            'gold_question': row['gold_question'],
++            'gold_ambiguous': bool(row['gold_ambiguous']),
++            'classification_prompt': row['classification_prompt'],
++            'question_prompt': row['question_prompt'] if row['predicted_ambiguous'] else None,
++            'ambiguity_score_ambiguous': row['ambiguity_score_ambiguous'],
++            'ambiguity_score_clear': row['ambiguity_score_clear'],
++            'ambiguity_probability': row['ambiguity_probability'],
++            'predicted_ambiguous': bool(row['predicted_ambiguous']),
++            'raw_question_output': row['raw_question_output'],
++            'generated_question': row['generated_question'],
++            'raw_oracle_question_output': row['raw_oracle_question_output'],
++            'oracle_generated_question': row['oracle_generated_question'],
++            'oracle_gate_question_similarity': oracle_metrics['model_question_best_similarity'],
++            'oracle_gate_resolved_proxy_any': oracle_metrics['resolved_proxy_any'],
++            **metrics,
++        })
++
++    predictions_path = pred_dir / 'predictions.jsonl'
++    results_path = pred_dir / 'results.json'
++    write_jsonl(predictions_path, prediction_rows)
++    write_json(results_path, {
++        'run_info': {
++            'experiment_name': experiment_name,
++            'model_name': config['model']['name'],
++            'dataset_path': config['dataset']['path'],
++            'include_unambiguous_pairs': include_pairs,
++            'decision_threshold': threshold,
++            'candidates': candidates,
++            'demonstrations_path': clam_cfg['demonstrations_path'],
++        },
++        'examples': prediction_rows,
++    })
++
++    example_metrics = pd.DataFrame(prediction_rows)
++    aggregate_df, category_df = aggregate_metrics(
++        example_metrics,
++        embed_threshold=embed_threshold,
++        brevity_max=brevity_max,
++        nli_threshold=nli_threshold,
++        enable_nli=enable_nli,
++    )
++    aggregate_df = add_clam_aggregate_metrics(aggregate_df, example_metrics)
++    save_metric_tables(example_metrics, aggregate_df, category_df, run_dir)
++
++    print(f'completed: {experiment_name}')
++    print(f'  predictions: {predictions_path}')
++    print(f'  aggregate metrics: {run_dir / "tables" / "aggregate_metrics.csv"}')
++    return {
++        'experiment_name': experiment_name,
++        'predictions_path': str(predictions_path),
++        'results_path': str(results_path),
++        'aggregate_metrics_path': str(run_dir / 'tables' / 'aggregate_metrics.csv'),
++    }
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--config', required=True)
++    return parser.parse_args()
++
++
++if __name__ == '__main__':
++    args = parse_args()
++    run_clam_eval(load_yaml(args.config))

@@ -210,6 +210,84 @@ class HFCausalBackend:
         prompt_width = int(inputs['input_ids'].shape[1])
         return self._decode_new_tokens(self.tokenizer, output[0], prompt_width)
 
+
+
+    @torch.inference_mode()
+    def score_candidate_continuations_batch(
+        self,
+        prompts: list[str],
+        candidates: list[str],
+        *,
+        length_normalize: bool = True,
+    ) -> list[list[float]]:
+        """Score fixed candidate continuations after each prompt.
+
+        The return value has shape ``[len(prompts), len(candidates)]``. Each
+        score is the conditional log-probability of the candidate tokens given
+        the formatted prompt. Mean token log-probability is used by default so
+        candidates with different token lengths remain comparable.
+        """
+        if not prompts:
+            return []
+        if not candidates:
+            raise ValueError('At least one candidate continuation is required.')
+
+        formatted_prompts = self._format_prompts(prompts)
+        examples: list[tuple[int, int, list[int], list[int]]] = []
+        for prompt_idx, formatted_prompt in enumerate(formatted_prompts):
+            prompt_ids = self.tokenizer(
+                formatted_prompt,
+                add_special_tokens=False,
+            )['input_ids']
+            if not prompt_ids:
+                raise ValueError('Formatted prompt tokenized to an empty sequence.')
+
+            for candidate_idx, candidate in enumerate(candidates):
+                candidate_ids = self.tokenizer(
+                    candidate,
+                    add_special_tokens=False,
+                )['input_ids']
+                if not candidate_ids:
+                    raise ValueError(f'Candidate {candidate!r} tokenized to an empty sequence.')
+                examples.append((prompt_idx, candidate_idx, prompt_ids, candidate_ids))
+
+        pad_id = int(self.tokenizer.pad_token_id)
+        max_len = max(len(prompt_ids) + len(candidate_ids) for _, _, prompt_ids, candidate_ids in examples)
+        input_rows: list[list[int]] = []
+        mask_rows: list[list[int]] = []
+        label_rows: list[list[int]] = []
+
+        for _, _, prompt_ids, candidate_ids in examples:
+            full_ids = [*prompt_ids, *candidate_ids]
+            left_pad = max_len - len(full_ids)
+            input_rows.append([pad_id] * left_pad + full_ids)
+            mask_rows.append([0] * left_pad + [1] * len(full_ids))
+            label_rows.append([-100] * (left_pad + len(prompt_ids)) + candidate_ids)
+
+        device = self._model_input_device()
+        input_ids = torch.tensor(input_rows, dtype=torch.long, device=device)
+        attention_mask = torch.tensor(mask_rows, dtype=torch.long, device=device)
+        labels = torch.tensor(label_rows, dtype=torch.long, device=device)
+
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = outputs.logits[:, :-1, :]
+        shifted_labels = labels[:, 1:]
+        valid = shifted_labels.ne(-100)
+        safe_labels = shifted_labels.masked_fill(~valid, 0)
+        token_log_probs = torch.log_softmax(logits.float(), dim=-1)
+        selected = token_log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+        selected = selected.masked_fill(~valid, 0.0)
+
+        sequence_scores = selected.sum(dim=-1)
+        if length_normalize:
+            lengths = valid.sum(dim=-1).clamp_min(1)
+            sequence_scores = sequence_scores / lengths
+
+        matrix = [[float('-inf')] * len(candidates) for _ in prompts]
+        for example_idx, (prompt_idx, candidate_idx, _, _) in enumerate(examples):
+            matrix[prompt_idx][candidate_idx] = float(sequence_scores[example_idx].item())
+        return matrix
+
     @torch.inference_mode()
     def generate_batch(self, prompts: list[str]) -> list[str]:
         prompts = self._format_prompts(prompts)
