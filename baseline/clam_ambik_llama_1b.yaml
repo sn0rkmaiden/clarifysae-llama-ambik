@@ -1,0 +1,50 @@
+experiment_name: clam_ambik_llama32_1b
+seed: 42
+
+model:
+  name: unsloth/Llama-3.2-1B-Instruct
+  backend: hf
+  torch_dtype: float16
+  device_map: auto
+  attn_implementation: null
+
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+
+generation:
+  max_new_tokens: 48
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+
+prompting:
+  use_chat_template: true
+  system_prompt: ""
+
+steering:
+  enabled: false
+
+batching:
+  batch_size: 1
+
+dataset:
+  path: data/raw/ambik/AmbiK_data.csv
+  limit: 100
+  include_unambiguous_pairs: true
+
+clam:
+  demonstrations_path: data/prompts/clam_ambik_demos.json
+  candidate_text:
+    ambiguous: " AMBIGUOUS"
+    clear: " CLEAR"
+  decision_threshold: 0.5
+  length_normalize_scores: true
+
+output:
+  root_dir: outputs
+
+evaluation:
+  embed_threshold: 0.75
+  enable_nli: false
+  brevity_max: 1
