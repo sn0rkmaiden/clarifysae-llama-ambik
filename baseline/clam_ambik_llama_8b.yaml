@@ -29,8 +29,8 @@ batching:
   batch_size: 1
 
 dataset:
-  path: data/raw/ambik/AmbiK_data.csv
-  limit: 100
+  path: data/raw/ambik/ambik_calib_100.csv
+  limit: null
   include_unambiguous_pairs: true
 
 clam:
