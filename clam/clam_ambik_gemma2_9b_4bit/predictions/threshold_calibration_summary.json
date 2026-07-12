@@ -1,0 +1,19 @@
+{
+  "n_examples": 100,
+  "n_ambiguous": 50,
+  "n_clear": 50,
+  "tp": 36,
+  "tn": 37,
+  "fp": 13,
+  "fn": 14,
+  "accuracy": 0.73,
+  "balanced_accuracy": 0.73,
+  "precision": 0.7346938775510204,
+  "recall": 0.72,
+  "specificity": 0.74,
+  "auroc": 0.7808,
+  "threshold": -0.16430943459272385,
+  "dataset_path": "data/raw/ambik/ambik_clam_threshold_50.csv",
+  "n_source_pairs_loaded": 50,
+  "n_excluded_identical_examples": 0
+}

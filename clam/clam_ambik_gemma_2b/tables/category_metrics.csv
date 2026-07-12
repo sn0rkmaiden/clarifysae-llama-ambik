@@ -1,0 +1,5 @@
+ambiguity_type,n_examples,asked_rate,avg_num_questions,mean_first_similarity_over_asked,mean_best_similarity_over_asked,resolved_proxy_first_rate,resolved_proxy_any_rate,resolved_proxy_rate,ambiguity_decision_accuracy
+common_sense_knowledge,40,0.925,0.925,0.4780890798649272,0.4780890798649272,0.275,0.275,0.275,0.95
+preferences,47,0.9361702127659575,0.9361702127659575,0.5347494540566747,0.5347494540566747,0.23404255319148937,0.23404255319148937,0.23404255319148937,0.9361702127659575
+safety,13,1.0,1.0,0.3614718604546327,0.3614718604546327,0.0,0.0,0.0,1.0
+unambiguous_direct,100,0.87,0.87,0.0,0.0,0.0,0.0,0.0,0.05

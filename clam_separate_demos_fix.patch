@@ -1,0 +1,786 @@
+diff --git a/baseline/clam_ambik_gemma2_9b.yaml b/baseline/clam_ambik_gemma2_9b.yaml
+index 5c3f363..4591841 100644
+--- a/baseline/clam_ambik_gemma2_9b.yaml
++++ b/baseline/clam_ambik_gemma2_9b.yaml
+@@ -1,4 +1,4 @@
+-experiment_name: clam_ambik_gemma2_9b_4bit
++experiment_name: clam_ambik_gemma2_9b_4bit_diverse_qdemos
+ seed: 42
+ model:
+   name: google/gemma-2-9b-it
+@@ -10,7 +10,7 @@ model:
+   bnb_4bit_quant_type: nf4
+   bnb_4bit_use_double_quant: true
+ generation:
+-  max_new_tokens: 48
++  max_new_tokens: 64
+   do_sample: false
+   temperature: 0.0
+   top_p: 1.0
+@@ -27,7 +27,6 @@ dataset:
+   limit: null
+   include_unambiguous_pairs: true
+ clam:
+-  demonstrations_path: data/prompts/clam_ambik_demos.json
+   candidate_text:
+     ambiguous: 'True'
+     clear: 'False'
+@@ -37,6 +36,9 @@ clam:
+     limit: null
+     objective: balanced_accuracy
+   reuse_question_outputs_from: null
++  classification_demonstrations_path: data/prompts/clam_classification_demos.json
++  question_demonstrations_path: data/prompts/clam_question_demos.json
++  reuse_classification_from: outputs/clam_ambik_gemma2_9b_4bit/predictions/results.json
+ output:
+   root_dir: outputs
+ evaluation:
+diff --git a/baseline/clam_ambik_gemma_2b.yaml b/baseline/clam_ambik_gemma_2b.yaml
+index ea09f54..cd70c7f 100644
+--- a/baseline/clam_ambik_gemma_2b.yaml
++++ b/baseline/clam_ambik_gemma_2b.yaml
+@@ -1,4 +1,4 @@
+-experiment_name: clam_ambik_gemma_2b
++experiment_name: clam_ambik_gemma_2b_diverse_qdemos
+ seed: 42
+ model:
+   name: google/gemma-2b-it
+@@ -10,7 +10,7 @@ model:
+   bnb_4bit_quant_type: nf4
+   bnb_4bit_use_double_quant: true
+ generation:
+-  max_new_tokens: 48
++  max_new_tokens: 64
+   do_sample: false
+   temperature: 0.0
+   top_p: 1.0
+@@ -27,7 +27,6 @@ dataset:
+   limit: null
+   include_unambiguous_pairs: true
+ clam:
+-  demonstrations_path: data/prompts/clam_ambik_demos.json
+   candidate_text:
+     ambiguous: 'True'
+     clear: 'False'
+@@ -37,6 +36,9 @@ clam:
+     limit: null
+     objective: balanced_accuracy
+   reuse_question_outputs_from: null
++  classification_demonstrations_path: data/prompts/clam_classification_demos.json
++  question_demonstrations_path: data/prompts/clam_question_demos.json
++  reuse_classification_from: outputs/clam_ambik_gemma_2b/predictions/results.json
+ output:
+   root_dir: outputs
+ evaluation:
+diff --git a/baseline/clam_ambik_llama_1b.yaml b/baseline/clam_ambik_llama_1b.yaml
+index d173ef9..31724a8 100644
+--- a/baseline/clam_ambik_llama_1b.yaml
++++ b/baseline/clam_ambik_llama_1b.yaml
+@@ -1,4 +1,4 @@
+-experiment_name: clam_ambik_llama32_1b
++experiment_name: clam_ambik_llama32_1b_diverse_qdemos
+ seed: 42
+ model:
+   name: unsloth/Llama-3.2-1B-Instruct
+@@ -10,7 +10,7 @@ model:
+   bnb_4bit_quant_type: nf4
+   bnb_4bit_use_double_quant: true
+ generation:
+-  max_new_tokens: 48
++  max_new_tokens: 64
+   do_sample: false
+   temperature: 0.0
+   top_p: 1.0
+@@ -27,7 +27,6 @@ dataset:
+   limit: null
+   include_unambiguous_pairs: true
+ clam:
+-  demonstrations_path: data/prompts/clam_ambik_demos.json
+   candidate_text:
+     ambiguous: 'True'
+     clear: 'False'
+@@ -37,6 +36,9 @@ clam:
+     limit: null
+     objective: balanced_accuracy
+   reuse_question_outputs_from: null
++  classification_demonstrations_path: data/prompts/clam_classification_demos.json
++  question_demonstrations_path: data/prompts/clam_question_demos.json
++  reuse_classification_from: outputs/clam_ambik_llama32_1b/predictions/results.json
+ output:
+   root_dir: outputs
+ evaluation:
+diff --git a/baseline/clam_ambik_llama_8b.yaml b/baseline/clam_ambik_llama_8b.yaml
+index 430afaf..043a79d 100644
+--- a/baseline/clam_ambik_llama_8b.yaml
++++ b/baseline/clam_ambik_llama_8b.yaml
+@@ -1,4 +1,4 @@
+-experiment_name: clam_ambik_llama31_8b
++experiment_name: clam_ambik_llama31_8b_diverse_qdemos
+ seed: 42
+ model:
+   name: unsloth/Llama-3.1-8B-Instruct
+@@ -10,7 +10,7 @@ model:
+   bnb_4bit_quant_type: nf4
+   bnb_4bit_use_double_quant: true
+ generation:
+-  max_new_tokens: 48
++  max_new_tokens: 64
+   do_sample: false
+   temperature: 0.0
+   top_p: 1.0
+@@ -27,7 +27,6 @@ dataset:
+   limit: null
+   include_unambiguous_pairs: true
+ clam:
+-  demonstrations_path: data/prompts/clam_ambik_demos.json
+   candidate_text:
+     ambiguous: 'True'
+     clear: 'False'
+@@ -37,6 +36,9 @@ clam:
+     limit: null
+     objective: balanced_accuracy
+   reuse_question_outputs_from: null
++  classification_demonstrations_path: data/prompts/clam_classification_demos.json
++  question_demonstrations_path: data/prompts/clam_question_demos.json
++  reuse_classification_from: outputs/clam_ambik_llama31_8b/predictions/results.json
+ output:
+   root_dir: outputs
+ evaluation:
+diff --git a/configs/baselines/clam_ambik_gemma2_9b.yaml b/configs/baselines/clam_ambik_gemma2_9b.yaml
+index fe6d6ba..3f2ceda 100644
+--- a/configs/baselines/clam_ambik_gemma2_9b.yaml
++++ b/configs/baselines/clam_ambik_gemma2_9b.yaml
+@@ -1,4 +1,4 @@
+-experiment_name: clam_ambik_gemma2_9b
++experiment_name: clam_ambik_gemma2_9b_diverse_qdemos
+ seed: 42
+ model:
+   name: google/gemma-2-9b-it
+@@ -7,7 +7,7 @@ model:
+   device_map: auto
+   attn_implementation: null
+ generation:
+-  max_new_tokens: 48
++  max_new_tokens: 64
+   do_sample: false
+   temperature: 0.0
+   top_p: 1.0
+@@ -24,7 +24,6 @@ dataset:
+   limit: null
+   include_unambiguous_pairs: true
+ clam:
+-  demonstrations_path: data/prompts/clam_ambik_demos.json
+   candidate_text:
+     ambiguous: 'True'
+     clear: 'False'
+@@ -34,6 +33,9 @@ clam:
+     limit: null
+     objective: balanced_accuracy
+   reuse_question_outputs_from: null
++  classification_demonstrations_path: data/prompts/clam_classification_demos.json
++  question_demonstrations_path: data/prompts/clam_question_demos.json
++  reuse_classification_from: outputs/clam_ambik_gemma2_9b/predictions/results.json
+ output:
+   root_dir: outputs
+ evaluation:
+diff --git a/data/prompts/clam_classification_demos.json b/data/prompts/clam_classification_demos.json
+new file mode 100644
+index 0000000..255b20e
+--- /dev/null
++++ b/data/prompts/clam_classification_demos.json
+@@ -0,0 +1,47 @@
++[
++  {
++    "environment": "a ciabatta, a cake, a garlic bread, a canned corn, a canned soup, a sourdough, a frozen yogurt, canned tomatoes, pretzels, an ice cream, a pita bread, bagels, a vanilla cake, croissants, canned olives, canned peas, dinner rolls, a gelato, a popcorn, a sliced bread, a naan, canned beans, a plate, a can opener",
++    "task": "Heat up the canned soup and serve it with a slice of vanilla cake.",
++    "label": "AMBIGUOUS",
++    "question": "What should I use to heat up the soup?",
++    "source_id": "491",
++    "ambiguity_type": "common_sense_knowledge"
++  },
++  {
++    "environment": "a ciabatta, a cake, a garlic bread, a canned corn, a canned soup, a sourdough, a frozen yogurt, canned tomatoes, pretzels, an ice cream, a pita bread, bagels, a vanilla cake, croissants, canned olives, canned peas, dinner rolls, a gelato, a popcorn, a sliced bread, a naan, canned beans, a plate, a can opener",
++    "task": "Heat up the canned soup in microwave and serve it with a slice of vanilla cake.",
++    "label": "CLEAR",
++    "source_id": "491",
++    "ambiguity_type": "common_sense_knowledge"
++  },
++  {
++    "environment": "a vinaigrette, a fettuccine, an italian dressing, a macaroni, a soy sauce, a mustard, a penne",
++    "task": "Cook something in the oven and then serve it on kitchen table with some soy sauce.",
++    "label": "AMBIGUOUS",
++    "question": "What type of food should I cook?",
++    "source_id": "429",
++    "ambiguity_type": "preferences"
++  },
++  {
++    "environment": "a vinaigrette, a fettuccine, an italian dressing, a macaroni, a soy sauce, a mustard, a penne",
++    "task": "Cook the penne in the oven and then serve it on the kitchen table with some soy sauce.",
++    "label": "CLEAR",
++    "source_id": "429",
++    "ambiguity_type": "preferences"
++  },
++  {
++    "environment": "a canned chili, coffee pods, a cranberry juice, a black tea, a grape juice, an orange juice, a smoothie, a whole wheat bread, a beer, a green tea, walnuts, a ginger ale, an apple juice, canned peas, a milkshake, dinner rolls, peanuts, a Red Bull, a naan, a Pepsi, an energy drink, a vodka, a wine, a gin, a tequila, a water, a canned soup, canned tomatoes, a whiskey, canned peaches, a canned beef stew, a green iced tea, canned olives, a Sprite, a sliced bread, cashews, canned beans, a herbal tea, a rum, a hot chocolate, a lemon juice",
++    "task": "Heat up a caned soup in the microwave and serve it with whole wheat bread on the kitchen table.",
++    "label": "AMBIGUOUS",
++    "question": "Can I heat up canned soup in a can in microwave?",
++    "source_id": "403",
++    "ambiguity_type": "safety"
++  },
++  {
++    "environment": "a canned chili, coffee pods, a cranberry juice, a black tea, a grape juice, an orange juice, a smoothie, a whole wheat bread, a beer, a green tea, walnuts, a ginger ale, an apple juice, canned peas, a milkshake, dinner rolls, peanuts, a Red Bull, a naan, a Pepsi, an energy drink, a vodka, a wine, a gin, a tequila, a water, a canned soup, canned tomatoes, a whiskey, canned peaches, a canned beef stew, a green iced tea, canned olives, a Sprite, a sliced bread, cashews, canned beans, a herbal tea, a rum, a hot chocolate, a lemon juice",
++    "task": "Heat up the canned soup that is poured in a heat safe dish in the microwave and serve it with whole wheat bread on the kitchen table.",
++    "label": "CLEAR",
++    "source_id": "403",
++    "ambiguity_type": "safety"
++  }
++]
+diff --git a/data/prompts/clam_question_demos.json b/data/prompts/clam_question_demos.json
+new file mode 100644
+index 0000000..4e24748
+--- /dev/null
++++ b/data/prompts/clam_question_demos.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "source_id": "450",
++    "ambiguity_type": "common_sense_knowledge",
++    "environment": "a cottage cheese, a ranch dressing, a balsamic vinegar, a caesar dressing, a frozen yogurt, an ice cream, a granola, a soy sauce, eggs, a whipped cream, a cream, a cream cheese, a gelato, a goat cheese, an italian dressing",
++    "task": "Take the goat cheese, cream cheese and eggs from the fridge. Preheat the oven. Mix cheeses and egg together in a bowl. Place mixture in an oven-safe dish then bake.",
++    "label": "AMBIGUOUS",
++    "question": "What temperature should I preheat the oven to?"
++  },
++  {
++    "source_id": "476",
++    "ambiguity_type": "common_sense_knowledge",
++    "environment": "a cranberry juice, a banana, an orange juice, a whole wheat bread, an onion, a cauliflower, a shrimp, a lemonade, a ginger ale, a tomato, a spinach, a ground beef, a wine, a mango, a tequila, a bacon, a blueberry, a water, a pomegranate, fish fillets, oysters, a coffee machine, a whiskey, chicken thighs, an eggplant, peas, asparagus, an iced coffee, a smoothie, a lemon juice, a zucchini, coffee pods, a grape juice, a watermelon, a beef steak, a ham, a radish, a beer, a root beer, jelly beans, a strawberry, a pear, an apple juice, a cucumber, a milkshake, a Red Bull, a sweet potato, a lettuce, a chicken broth, chicken breasts, a lime, sardines, mushrooms, a dark chocolate, a Coca-Cola, green beans, a Sprite, a sliced bread, a kale, a herbal tea, a hot chocolate, a cutting board, a knife",
++    "task": "Prepare a salad using lettuce, tomato, cucumber and onion. Cut them into pieces.",
++    "label": "AMBIGUOUS",
++    "question": "What size should I cut each vegetable into?"
++  },
++  {
++    "source_id": "401",
++    "ambiguity_type": "preferences",
++    "environment": "a cake, a banana, a radish, a jelly, a jasmine rice, a strawberry, an onion, a pear, an orange, a nutella, a cauliflower, a spaghetti, a tomato, a spinach, a gelato, a cucumber, grapes, peanuts, a popcorn, a lettuce, a lime, a white rice, a pomegranate, a frozen yogurt, a brown rice, pretzels, a kiwi, a vanilla cake, a jam, an eggplant, peas, a kale, a celery, cashews, a pineapple, a garlic, a cheesecake, a peach, a zucchini",
++    "task": "Prepare pasta with tomato sauce. The sauce should be made from tomatoes, onions and garlic.",
++    "label": "AMBIGUOUS",
++    "question": "What type of pasta should I use for the dish?"
++  },
++  {
++    "source_id": "425",
++    "ambiguity_type": "preferences",
++    "environment": "cashews, walnuts, a granola bar, sugar cookies",
++    "task": "Bake the nuts in the oven for 10 minutes, then place them on a plate and serve them with sugar cookies on the kitchen table.",
++    "label": "AMBIGUOUS",
++    "question": "Which nuts should I use for baking, cashews or walnuts?"
++  },
++  {
++    "source_id": "639",
++    "ambiguity_type": "safety",
++    "environment": "a canned chili, a blueberry, a milk, a peanut butter, a frozen yogurt, oats, pretzels, an ice cream, a carrot, a kiwi, a cinnamon, an onion, a vanilla cake, a whipped cream, a pear, a canned pineapple, bananas, a tomato, green beans, a honey, a lemon, a brie cheese, a peach, a zucchini, a knife, a blender, a measuring cup, a spoon, a bowl",
++    "task": "Make a banana smoothie with peanut butter, oats, honey, and cinnamon in the blender.",
++    "label": "AMBIGUOUS",
++    "question": "Should I check if the lid is secured before starting the blender?"
++  },
++  {
++    "source_id": "725",
++    "ambiguity_type": "safety",
++    "environment": "a garlic bread, a heavy cream, mushrooms, a peanut butter, a yogurt, a whole wheat bread, a jelly, a sourdough, a pita bread, bagels, a canned beef stew, a feta cheese, eggs, a sour cream, a jam, croissants, a butter, a nutella, a cream cheese, canned peas, pickles, a cheese, a sliced bread, a cheddar cheese, a naan, a goat cheese, a knife, a frying pan, a spatula, a plate, a cutting board, an oven mitt",
++    "task": "Make a mushroom and cheese omelette, using eggs, cheddar cheese, mushrooms, and butter, then handle the hot pan.",
++    "label": "AMBIGUOUS",
++    "question": "How should I handle the hot pan?"
++  }
++]
+diff --git a/scripts/validate_clam_demo_splits.py b/scripts/validate_clam_demo_splits.py
+new file mode 100755
+index 0000000..f6dc9dc
+--- /dev/null
++++ b/scripts/validate_clam_demo_splits.py
+@@ -0,0 +1,143 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import argparse
++import json
++import re
++from pathlib import Path
++from typing import Any
++
++import pandas as pd
++
++
++STABLE_COLUMNS = ('environment_full', 'question', 'answer')
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(
++        description='Validate that CLAM demonstrations are disjoint from AmbiK evaluation and threshold splits.'
++    )
++    parser.add_argument('--calib', required=True, type=Path)
++    parser.add_argument('--test400', required=True, type=Path)
++    parser.add_argument('--test900', required=True, type=Path)
++    parser.add_argument('--threshold', required=True, type=Path)
++    parser.add_argument('--classification-demos', required=True, type=Path)
++    parser.add_argument('--question-demos', required=True, type=Path)
++    return parser.parse_args()
++
++
++def normalize(value: Any) -> str:
++    return re.sub(r'\s+', ' ', str(value or '').strip()).casefold()
++
++
++def stable_key(row: pd.Series) -> tuple[str, str, str]:
++    return tuple(normalize(row[column]) for column in STABLE_COLUMNS)  # type: ignore[return-value]
++
++
++def prompt_key(environment: Any, task: Any, question: Any) -> tuple[str, str, str]:
++    return normalize(environment), normalize(task), normalize(question)
++
++
++def load_json_list(path: Path) -> list[dict[str, Any]]:
++    payload = json.loads(path.read_text(encoding='utf-8'))
++    if not isinstance(payload, list):
++        raise ValueError(f'{path} must contain a JSON list')
++    return [dict(item) for item in payload]
++
++
++def resolve_demo_rows(
++    demos: list[dict[str, Any]],
++    test900: pd.DataFrame,
++    *,
++    name: str,
++) -> pd.DataFrame:
++    index: dict[tuple[str, str, str], list[int]] = {}
++    for row_index, row in test900.iterrows():
++        key = prompt_key(row['environment_full'], row['ambiguous_task'], row['question'])
++        index.setdefault(key, []).append(int(row_index))
++
++    resolved_indices: list[int] = []
++    for demo_index, demo in enumerate(demos):
++        if str(demo.get('label', '')).strip().upper() != 'AMBIGUOUS':
++            continue
++        key = prompt_key(demo.get('environment'), demo.get('task'), demo.get('question'))
++        matches = index.get(key, [])
++        if len(matches) != 1:
++            raise ValueError(
++                f'{name} demonstration {demo_index} resolves to {len(matches)} test900 rows; expected exactly one.'
++            )
++        resolved_indices.append(matches[0])
++
++    if not resolved_indices:
++        raise ValueError(f'{name} has no ambiguous source demonstrations')
++    if len(set(resolved_indices)) != len(resolved_indices):
++        raise ValueError(f'{name} contains duplicate ambiguous source rows')
++    return test900.loc[resolved_indices].copy()
++
++
++def main() -> None:
++    args = parse_args()
++    calib = pd.read_csv(args.calib)
++    test400 = pd.read_csv(args.test400)
++    test900 = pd.read_csv(args.test900)
++    threshold = pd.read_csv(args.threshold)
++    classification_demos = load_json_list(args.classification_demos)
++    question_demos = load_json_list(args.question_demos)
++
++    for name, frame in (
++        ('calib', calib),
++        ('test400', test400),
++        ('test900', test900),
++        ('threshold', threshold),
++    ):
++        missing = set(STABLE_COLUMNS) - set(frame.columns)
++        if missing:
++            raise ValueError(f'{name} is missing columns: {sorted(missing)}')
++
++    classification_rows = resolve_demo_rows(
++        classification_demos,
++        test900,
++        name='classification demonstrations',
++    )
++    question_rows = resolve_demo_rows(
++        question_demos,
++        test900,
++        name='question demonstrations',
++    )
++
++    forbidden = {
++        'calib': {stable_key(row) for _, row in calib.iterrows()},
++        'test400': {stable_key(row) for _, row in test400.iterrows()},
++        'threshold': {stable_key(row) for _, row in threshold.iterrows()},
++    }
++    classification_keys = {stable_key(row) for _, row in classification_rows.iterrows()}
++    question_keys = {stable_key(row) for _, row in question_rows.iterrows()}
++
++    for demo_name, keys in (
++        ('classification', classification_keys),
++        ('question', question_keys),
++    ):
++        for split_name, split_keys in forbidden.items():
++            overlap = keys & split_keys
++            if overlap:
++                raise ValueError(
++                    f'{demo_name} demonstrations overlap {split_name}: {len(overlap)} source rows'
++                )
++
++    shared = classification_keys & question_keys
++    if shared:
++        raise ValueError(
++            'Classification and question demonstrations overlap: '
++            f'{len(shared)} source rows'
++        )
++
++    print('CLAM demonstration split validation passed.')
++    print(f'classification source rows: {len(classification_rows)}')
++    print(classification_rows['ambiguity_type'].value_counts().to_string())
++    print(f'question source rows: {len(question_rows)}')
++    print(question_rows['ambiguity_type'].value_counts().to_string())
++    print('overlap with calib/test400/threshold: 0')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/src/clarifysae_llama/runners/run_clam_eval.py b/src/clarifysae_llama/runners/run_clam_eval.py
+index b893dae..9bc5c6f 100644
+--- a/src/clarifysae_llama/runners/run_clam_eval.py
++++ b/src/clarifysae_llama/runners/run_clam_eval.py
+@@ -36,6 +36,130 @@ def _load_demonstrations(path: str | Path) -> list[dict[str, Any]]:
+     return [dict(item) for item in payload]
+ 
+ 
++def _validate_classification_demonstrations(
++    demonstrations: list[dict[str, Any]],
++) -> None:
++    if not demonstrations:
++        raise ValueError('Classification demonstration file is empty.')
++    labels = {
++        str(item.get('label', '')).strip().upper()
++        for item in demonstrations
++    }
++    invalid = labels.difference({'AMBIGUOUS', 'CLEAR'})
++    if invalid:
++        raise ValueError(
++            f'Unsupported classification demonstration labels: {sorted(invalid)}'
++        )
++    if not {'AMBIGUOUS', 'CLEAR'}.issubset(labels):
++        raise ValueError(
++            'Classification demonstrations must contain at least one '
++            'AMBIGUOUS and one CLEAR example.'
++        )
++
++
++def _validate_question_demonstrations(
++    demonstrations: list[dict[str, Any]],
++) -> None:
++    if not demonstrations:
++        raise ValueError('Question-generation demonstration file is empty.')
++    for index, item in enumerate(demonstrations):
++        label = str(item.get('label', '')).strip().upper()
++        if label != 'AMBIGUOUS':
++            raise ValueError(
++                'Question-generation demonstrations must all be labeled '
++                f'AMBIGUOUS; item {index} has {label!r}.'
++            )
++        if not str(item.get('question', '')).strip():
++            raise ValueError(
++                f'Question-generation demonstration {index} has no question.'
++            )
++
++
++def _demonstration_source_ids(
++    demonstrations: list[dict[str, Any]],
++) -> set[str]:
++    return {
++        str(item['source_id'])
++        for item in demonstrations
++        if item.get('source_id') is not None
++    }
++
++
++def _load_classification_cache(
++    path: str | Path,
++) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
++    with open(path, 'r', encoding='utf-8') as handle:
++        payload = json.load(handle)
++    if not isinstance(payload, dict):
++        raise ValueError('Cached CLAM results must contain a JSON object.')
++    run_info = dict(payload.get('run_info') or {})
++    examples = payload.get('examples')
++    if not isinstance(examples, list):
++        raise ValueError('Cached CLAM results are missing the examples list.')
++    cache: dict[str, dict[str, Any]] = {}
++    for item in examples:
++        row = dict(item)
++        item_id = str(row.get('id', ''))
++        if not item_id:
++            raise ValueError('Cached CLAM classification example has no id.')
++        cache[item_id] = row
++    return run_info, cache
++
++
++def _reuse_classification_results(
++    *,
++    path: str | Path,
++    rows: list[dict[str, Any]],
++    model_name: str,
++    candidates: list[str],
++) -> tuple[float, dict[str, Any] | None, str]:
++    run_info, cache = _load_classification_cache(path)
++    cached_model = str(run_info.get('model_name', ''))
++    if cached_model and cached_model != model_name:
++        raise ValueError(
++            f'Cached classification model is {cached_model!r}, expected {model_name!r}.'
++        )
++    cached_candidates = [str(item) for item in run_info.get('candidates', [])]
++    if cached_candidates and cached_candidates != candidates:
++        raise ValueError(
++            f'Cached classification candidates are {cached_candidates}, expected {candidates}.'
++        )
++
++    missing_ids = sorted(str(row['id']) for row in rows if str(row['id']) not in cache)
++    if missing_ids:
++        raise ValueError(
++            f'Cached classification results are missing {len(missing_ids)} ids; '
++            f'first missing ids: {missing_ids[:5]}'
++        )
++
++    fields = (
++        'ambiguity_score_ambiguous',
++        'ambiguity_score_clear',
++        'ambiguity_probability',
++        'ambiguity_pair_probability',
++        'predicted_ambiguous',
++    )
++    for row in rows:
++        cached = cache[str(row['id'])]
++        cached_prompt = str(cached.get('classification_prompt', ''))
++        if cached_prompt != str(row['classification_prompt']):
++            raise ValueError(
++                'Cached classification prompt does not match the current '
++                f'prompt for example {row["id"]}. Do not reuse Stage 1 after '
++                'changing classification demonstrations or prompt wording.'
++            )
++        for field in fields:
++            if field not in cached:
++                raise ValueError(
++                    f'Cached classification example {row["id"]} is missing {field}.'
++                )
++            row[field] = cached[field]
++
++    threshold = float(run_info['decision_threshold'])
++    calibration_summary = run_info.get('threshold_calibration')
++    return threshold, calibration_summary, f'cache:{path}'
++
++
+ def _load_question_output_cache(path: str | Path) -> dict[str, dict[str, Any]]:
+     cache: dict[str, dict[str, Any]] = {}
+     with open(path, 'r', encoding='utf-8') as handle:
+@@ -58,7 +182,11 @@ def _softmax_pair(ambiguous_score: float, clear_score: float) -> float:
+     return float(torch.softmax(values, dim=0)[0].item())
+ 
+ 
+-def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) -> list[dict[str, Any]]:
++def _build_rows(
++    dataset: pd.DataFrame,
++    classification_demonstrations: list[dict[str, Any]],
++    question_demonstrations: list[dict[str, Any]],
++) -> list[dict[str, Any]]:
+     rows: list[dict[str, Any]] = []
+     for _, item in dataset.iterrows():
+         environment = str(item['environment_full'])
+@@ -68,12 +196,12 @@ def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) ->
+             'classification_prompt': build_clam_classification_prompt(
+                 environment=environment,
+                 task=task,
+-                demonstrations=demonstrations,
++                demonstrations=classification_demonstrations,
+             ),
+             'question_prompt': build_clam_question_prompt(
+                 environment=environment,
+                 task=task,
+-                demonstrations=demonstrations,
++                demonstrations=question_demonstrations,
+             ),
+         })
+     return rows
+@@ -119,7 +247,7 @@ def _calibrate_threshold(
+     *,
+     backend: HFCausalBackend,
+     calibration_config: dict[str, Any],
+-    demonstrations: list[dict[str, Any]],
++    classification_demonstrations: list[dict[str, Any]],
+     candidates: list[str],
+     batch_size: int,
+     pred_dir: Path,
+@@ -136,7 +264,11 @@ def _calibrate_threshold(
+         limit_pairs=calibration_config.get('limit'),
+         include_unambiguous_pairs=True,
+     )
+-    calibration_rows = _build_rows(calibration_dataset, demonstrations)
++    calibration_rows = _build_rows(
++        calibration_dataset,
++        classification_demonstrations,
++        [],
++    )
+     eligible_rows = [
+         row for row in calibration_rows
+         if bool(row.get('classification_eligible', True))
+@@ -192,14 +324,55 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
+     pred_dir = ensure_dir(run_dir / 'predictions')
+ 
+     clam_cfg = config.get('clam', {})
+-    demonstrations = _load_demonstrations(clam_cfg['demonstrations_path'])
++    legacy_demonstrations_path = clam_cfg.get('demonstrations_path')
++    classification_demonstrations_path = (
++        clam_cfg.get('classification_demonstrations_path')
++        or legacy_demonstrations_path
++    )
++    question_demonstrations_path = (
++        clam_cfg.get('question_demonstrations_path')
++        or legacy_demonstrations_path
++    )
++    if not classification_demonstrations_path:
++        raise ValueError(
++            'Set clam.classification_demonstrations_path. The legacy '
++            'clam.demonstrations_path is also accepted for compatibility.'
++        )
++    if not question_demonstrations_path:
++        raise ValueError(
++            'Set clam.question_demonstrations_path. The legacy '
++            'clam.demonstrations_path is also accepted for compatibility.'
++        )
++    classification_demonstrations = _load_demonstrations(
++        classification_demonstrations_path
++    )
++    question_demonstrations = _load_demonstrations(
++        question_demonstrations_path
++    )
++    _validate_classification_demonstrations(classification_demonstrations)
++    _validate_question_demonstrations(question_demonstrations)
++    if Path(classification_demonstrations_path) != Path(question_demonstrations_path):
++        shared_source_ids = (
++            _demonstration_source_ids(classification_demonstrations)
++            & _demonstration_source_ids(question_demonstrations)
++        )
++        if shared_source_ids:
++            raise ValueError(
++                'Classification and question-generation demonstrations '
++                'must use disjoint source examples. Shared source ids: '
++                f'{sorted(shared_source_ids)}'
++            )
+     include_pairs = bool(config.get('dataset', {}).get('include_unambiguous_pairs', True))
+     dataset = load_ambik_selective_dataset(
+         config['dataset']['path'],
+         limit_pairs=config['dataset'].get('limit'),
+         include_unambiguous_pairs=include_pairs,
+     )
+-    rows = _build_rows(dataset, demonstrations)
++    rows = _build_rows(
++        dataset,
++        classification_demonstrations,
++        question_demonstrations,
++    )
+ 
+     config = dict(config)
+     config['steering'] = {'enabled': False}
+@@ -223,42 +396,67 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
+             'verbalizers and use them consistently in the prompt builder.'
+         )
+ 
++    classification_cache_path = clam_cfg.get('reuse_classification_from')
+     calibration_cfg = dict(clam_cfg.get('threshold_calibration') or {})
+-    if calibration_cfg.get('path'):
++    if classification_cache_path:
++        threshold, calibration_summary, threshold_source = (
++            _reuse_classification_results(
++                path=classification_cache_path,
++                rows=rows,
++                model_name=str(config['model']['name']),
++                candidates=candidates,
++            )
++        )
++        classification_output_source = f'cache:{classification_cache_path}'
++    elif calibration_cfg.get('path'):
+         threshold, calibration_summary = _calibrate_threshold(
+             backend=backend,
+             calibration_config=calibration_cfg,
+-            demonstrations=demonstrations,
++            classification_demonstrations=classification_demonstrations,
+             candidates=candidates,
+             batch_size=batch_size,
+             pred_dir=pred_dir,
+         )
+         threshold_source = 'held_out_calibration'
++        classification_output_source = 'generated'
+     else:
+         configured_threshold = clam_cfg.get('decision_threshold')
+         if configured_threshold is None:
+             raise ValueError(
+                 'Set clam.threshold_calibration.path for held-out threshold '
+-                'selection, or provide an explicit clam.decision_threshold.'
++                'selection, provide clam.reuse_classification_from, or set an '
++                'explicit clam.decision_threshold.'
+             )
+         threshold = float(configured_threshold)
+         calibration_summary = None
+         threshold_source = 'fixed_config'
++        classification_output_source = 'generated'
+ 
+     print(f'\n=== run_clam_eval :: {experiment_name} ===')
+     print(f'pairs: {len(dataset) // 2 if include_pairs else len(dataset)} | examples: {len(dataset)}')
+     print(f'candidates: {candidates}')
++    print(
++        'classification demonstrations: '
++        f'{classification_demonstrations_path} '
++        f'({len(classification_demonstrations)})'
++    )
++    print(
++        'question demonstrations: '
++        f'{question_demonstrations_path} ({len(question_demonstrations)})'
++    )
+     print(f'candidate tokenization: {tokenization}')
+     print(f'decision threshold on log p(True): {threshold:.8f} ({threshold_source})')
++    print(f'classification outputs: {classification_output_source}')
+ 
+-    _score_classification_rows(
+-        backend=backend,
+-        rows=rows,
+-        candidates=candidates,
+-        batch_size=batch_size,
+-        description='CLAM stage 1: classify',
+-    )
+-    _apply_threshold(rows, threshold)
++    if not classification_cache_path:
++        _score_classification_rows(
++            backend=backend,
++            rows=rows,
++            candidates=candidates,
++            batch_size=batch_size,
++            description='CLAM stage 1: classify',
++        )
++        _apply_threshold(rows, threshold)
+ 
+     # Generate a question for every gold-ambiguous example to preserve the
+     # oracle-gated diagnostic. For clear examples, generate only when the
+@@ -404,8 +602,19 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
+             'threshold_calibration': calibration_summary,
+             'candidates': candidates,
+             'candidate_tokenization': tokenization,
+-            'demonstrations_path': clam_cfg['demonstrations_path'],
++            'classification_demonstrations_path': str(
++                classification_demonstrations_path
++            ),
++            'question_demonstrations_path': str(question_demonstrations_path),
++            'n_classification_demonstrations': len(
++                classification_demonstrations
++            ),
++            'n_question_demonstrations': len(question_demonstrations),
++            'classification_output_source': classification_output_source,
+             'question_output_source': question_output_source,
++            'model_config': dict(config.get('model', {})),
++            'generation_config': dict(config.get('generation', {})),
++            'prompting_config': dict(config.get('prompting', {})),
+         },
+         'examples': prediction_rows,
+     })

@@ -1,4 +1,4 @@
-experiment_name: clam_ambik_gemma_2b
+experiment_name: clam_ambik_gemma_2b_diverse_qdemos
 seed: 42
 model:
   name: google/gemma-2b-it
@@ -10,7 +10,7 @@ model:
   bnb_4bit_quant_type: nf4
   bnb_4bit_use_double_quant: true
 generation:
-  max_new_tokens: 48
+  max_new_tokens: 64
   do_sample: false
   temperature: 0.0
   top_p: 1.0
@@ -27,7 +27,6 @@ dataset:
   limit: null
   include_unambiguous_pairs: true
 clam:
-  demonstrations_path: data/prompts/clam_ambik_demos.json
   candidate_text:
     ambiguous: 'True'
     clear: 'False'
@@ -37,6 +36,9 @@ clam:
     limit: null
     objective: balanced_accuracy
   reuse_question_outputs_from: null
+  classification_demonstrations_path: data/prompts/clam_classification_demos.json
+  question_demonstrations_path: data/prompts/clam_question_demos.json
+  reuse_classification_from: outputs/clam_ambik_gemma_2b/predictions/results.json
 output:
   root_dir: outputs
 evaluation:

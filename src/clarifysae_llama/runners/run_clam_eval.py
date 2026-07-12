@@ -36,6 +36,130 @@ def _load_demonstrations(path: str | Path) -> list[dict[str, Any]]:
     return [dict(item) for item in payload]
 
 
+def _validate_classification_demonstrations(
+    demonstrations: list[dict[str, Any]],
+) -> None:
+    if not demonstrations:
+        raise ValueError('Classification demonstration file is empty.')
+    labels = {
+        str(item.get('label', '')).strip().upper()
+        for item in demonstrations
+    }
+    invalid = labels.difference({'AMBIGUOUS', 'CLEAR'})
+    if invalid:
+        raise ValueError(
+            f'Unsupported classification demonstration labels: {sorted(invalid)}'
+        )
+    if not {'AMBIGUOUS', 'CLEAR'}.issubset(labels):
+        raise ValueError(
+            'Classification demonstrations must contain at least one '
+            'AMBIGUOUS and one CLEAR example.'
+        )
+
+
+def _validate_question_demonstrations(
+    demonstrations: list[dict[str, Any]],
+) -> None:
+    if not demonstrations:
+        raise ValueError('Question-generation demonstration file is empty.')
+    for index, item in enumerate(demonstrations):
+        label = str(item.get('label', '')).strip().upper()
+        if label != 'AMBIGUOUS':
+            raise ValueError(
+                'Question-generation demonstrations must all be labeled '
+                f'AMBIGUOUS; item {index} has {label!r}.'
+            )
+        if not str(item.get('question', '')).strip():
+            raise ValueError(
+                f'Question-generation demonstration {index} has no question.'
+            )
+
+
+def _demonstration_source_ids(
+    demonstrations: list[dict[str, Any]],
+) -> set[str]:
+    return {
+        str(item['source_id'])
+        for item in demonstrations
+        if item.get('source_id') is not None
+    }
+
+
+def _load_classification_cache(
+    path: str | Path,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    with open(path, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError('Cached CLAM results must contain a JSON object.')
+    run_info = dict(payload.get('run_info') or {})
+    examples = payload.get('examples')
+    if not isinstance(examples, list):
+        raise ValueError('Cached CLAM results are missing the examples list.')
+    cache: dict[str, dict[str, Any]] = {}
+    for item in examples:
+        row = dict(item)
+        item_id = str(row.get('id', ''))
+        if not item_id:
+            raise ValueError('Cached CLAM classification example has no id.')
+        cache[item_id] = row
+    return run_info, cache
+
+
+def _reuse_classification_results(
+    *,
+    path: str | Path,
+    rows: list[dict[str, Any]],
+    model_name: str,
+    candidates: list[str],
+) -> tuple[float, dict[str, Any] | None, str]:
+    run_info, cache = _load_classification_cache(path)
+    cached_model = str(run_info.get('model_name', ''))
+    if cached_model and cached_model != model_name:
+        raise ValueError(
+            f'Cached classification model is {cached_model!r}, expected {model_name!r}.'
+        )
+    cached_candidates = [str(item) for item in run_info.get('candidates', [])]
+    if cached_candidates and cached_candidates != candidates:
+        raise ValueError(
+            f'Cached classification candidates are {cached_candidates}, expected {candidates}.'
+        )
+
+    missing_ids = sorted(str(row['id']) for row in rows if str(row['id']) not in cache)
+    if missing_ids:
+        raise ValueError(
+            f'Cached classification results are missing {len(missing_ids)} ids; '
+            f'first missing ids: {missing_ids[:5]}'
+        )
+
+    fields = (
+        'ambiguity_score_ambiguous',
+        'ambiguity_score_clear',
+        'ambiguity_probability',
+        'ambiguity_pair_probability',
+        'predicted_ambiguous',
+    )
+    for row in rows:
+        cached = cache[str(row['id'])]
+        cached_prompt = str(cached.get('classification_prompt', ''))
+        if cached_prompt != str(row['classification_prompt']):
+            raise ValueError(
+                'Cached classification prompt does not match the current '
+                f'prompt for example {row["id"]}. Do not reuse Stage 1 after '
+                'changing classification demonstrations or prompt wording.'
+            )
+        for field in fields:
+            if field not in cached:
+                raise ValueError(
+                    f'Cached classification example {row["id"]} is missing {field}.'
+                )
+            row[field] = cached[field]
+
+    threshold = float(run_info['decision_threshold'])
+    calibration_summary = run_info.get('threshold_calibration')
+    return threshold, calibration_summary, f'cache:{path}'
+
+
 def _load_question_output_cache(path: str | Path) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     with open(path, 'r', encoding='utf-8') as handle:
@@ -58,7 +182,11 @@ def _softmax_pair(ambiguous_score: float, clear_score: float) -> float:
     return float(torch.softmax(values, dim=0)[0].item())
 
 
-def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_rows(
+    dataset: pd.DataFrame,
+    classification_demonstrations: list[dict[str, Any]],
+    question_demonstrations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for _, item in dataset.iterrows():
         environment = str(item['environment_full'])
@@ -68,12 +196,12 @@ def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) -> 
             'classification_prompt': build_clam_classification_prompt(
                 environment=environment,
                 task=task,
-                demonstrations=demonstrations,
+                demonstrations=classification_demonstrations,
             ),
             'question_prompt': build_clam_question_prompt(
                 environment=environment,
                 task=task,
-                demonstrations=demonstrations,
+                demonstrations=question_demonstrations,
             ),
         })
     return rows
@@ -119,7 +247,7 @@ def _calibrate_threshold(
     *,
     backend: HFCausalBackend,
     calibration_config: dict[str, Any],
-    demonstrations: list[dict[str, Any]],
+    classification_demonstrations: list[dict[str, Any]],
     candidates: list[str],
     batch_size: int,
     pred_dir: Path,
@@ -136,7 +264,11 @@ def _calibrate_threshold(
         limit_pairs=calibration_config.get('limit'),
         include_unambiguous_pairs=True,
     )
-    calibration_rows = _build_rows(calibration_dataset, demonstrations)
+    calibration_rows = _build_rows(
+        calibration_dataset,
+        classification_demonstrations,
+        [],
+    )
     eligible_rows = [
         row for row in calibration_rows
         if bool(row.get('classification_eligible', True))
@@ -192,14 +324,55 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
     pred_dir = ensure_dir(run_dir / 'predictions')
 
     clam_cfg = config.get('clam', {})
-    demonstrations = _load_demonstrations(clam_cfg['demonstrations_path'])
+    legacy_demonstrations_path = clam_cfg.get('demonstrations_path')
+    classification_demonstrations_path = (
+        clam_cfg.get('classification_demonstrations_path')
+        or legacy_demonstrations_path
+    )
+    question_demonstrations_path = (
+        clam_cfg.get('question_demonstrations_path')
+        or legacy_demonstrations_path
+    )
+    if not classification_demonstrations_path:
+        raise ValueError(
+            'Set clam.classification_demonstrations_path. The legacy '
+            'clam.demonstrations_path is also accepted for compatibility.'
+        )
+    if not question_demonstrations_path:
+        raise ValueError(
+            'Set clam.question_demonstrations_path. The legacy '
+            'clam.demonstrations_path is also accepted for compatibility.'
+        )
+    classification_demonstrations = _load_demonstrations(
+        classification_demonstrations_path
+    )
+    question_demonstrations = _load_demonstrations(
+        question_demonstrations_path
+    )
+    _validate_classification_demonstrations(classification_demonstrations)
+    _validate_question_demonstrations(question_demonstrations)
+    if Path(classification_demonstrations_path) != Path(question_demonstrations_path):
+        shared_source_ids = (
+            _demonstration_source_ids(classification_demonstrations)
+            & _demonstration_source_ids(question_demonstrations)
+        )
+        if shared_source_ids:
+            raise ValueError(
+                'Classification and question-generation demonstrations '
+                'must use disjoint source examples. Shared source ids: '
+                f'{sorted(shared_source_ids)}'
+            )
     include_pairs = bool(config.get('dataset', {}).get('include_unambiguous_pairs', True))
     dataset = load_ambik_selective_dataset(
         config['dataset']['path'],
         limit_pairs=config['dataset'].get('limit'),
         include_unambiguous_pairs=include_pairs,
     )
-    rows = _build_rows(dataset, demonstrations)
+    rows = _build_rows(
+        dataset,
+        classification_demonstrations,
+        question_demonstrations,
+    )
 
     config = dict(config)
     config['steering'] = {'enabled': False}
@@ -223,42 +396,67 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             'verbalizers and use them consistently in the prompt builder.'
         )
 
+    classification_cache_path = clam_cfg.get('reuse_classification_from')
     calibration_cfg = dict(clam_cfg.get('threshold_calibration') or {})
-    if calibration_cfg.get('path'):
+    if classification_cache_path:
+        threshold, calibration_summary, threshold_source = (
+            _reuse_classification_results(
+                path=classification_cache_path,
+                rows=rows,
+                model_name=str(config['model']['name']),
+                candidates=candidates,
+            )
+        )
+        classification_output_source = f'cache:{classification_cache_path}'
+    elif calibration_cfg.get('path'):
         threshold, calibration_summary = _calibrate_threshold(
             backend=backend,
             calibration_config=calibration_cfg,
-            demonstrations=demonstrations,
+            classification_demonstrations=classification_demonstrations,
             candidates=candidates,
             batch_size=batch_size,
             pred_dir=pred_dir,
         )
         threshold_source = 'held_out_calibration'
+        classification_output_source = 'generated'
     else:
         configured_threshold = clam_cfg.get('decision_threshold')
         if configured_threshold is None:
             raise ValueError(
                 'Set clam.threshold_calibration.path for held-out threshold '
-                'selection, or provide an explicit clam.decision_threshold.'
+                'selection, provide clam.reuse_classification_from, or set an '
+                'explicit clam.decision_threshold.'
             )
         threshold = float(configured_threshold)
         calibration_summary = None
         threshold_source = 'fixed_config'
+        classification_output_source = 'generated'
 
     print(f'\n=== run_clam_eval :: {experiment_name} ===')
     print(f'pairs: {len(dataset) // 2 if include_pairs else len(dataset)} | examples: {len(dataset)}')
     print(f'candidates: {candidates}')
+    print(
+        'classification demonstrations: '
+        f'{classification_demonstrations_path} '
+        f'({len(classification_demonstrations)})'
+    )
+    print(
+        'question demonstrations: '
+        f'{question_demonstrations_path} ({len(question_demonstrations)})'
+    )
     print(f'candidate tokenization: {tokenization}')
     print(f'decision threshold on log p(True): {threshold:.8f} ({threshold_source})')
+    print(f'classification outputs: {classification_output_source}')
 
-    _score_classification_rows(
-        backend=backend,
-        rows=rows,
-        candidates=candidates,
-        batch_size=batch_size,
-        description='CLAM stage 1: classify',
-    )
-    _apply_threshold(rows, threshold)
+    if not classification_cache_path:
+        _score_classification_rows(
+            backend=backend,
+            rows=rows,
+            candidates=candidates,
+            batch_size=batch_size,
+            description='CLAM stage 1: classify',
+        )
+        _apply_threshold(rows, threshold)
 
     # Generate a question for every gold-ambiguous example to preserve the
     # oracle-gated diagnostic. For clear examples, generate only when the
@@ -404,8 +602,19 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             'threshold_calibration': calibration_summary,
             'candidates': candidates,
             'candidate_tokenization': tokenization,
-            'demonstrations_path': clam_cfg['demonstrations_path'],
+            'classification_demonstrations_path': str(
+                classification_demonstrations_path
+            ),
+            'question_demonstrations_path': str(question_demonstrations_path),
+            'n_classification_demonstrations': len(
+                classification_demonstrations
+            ),
+            'n_question_demonstrations': len(question_demonstrations),
+            'classification_output_source': classification_output_source,
             'question_output_source': question_output_source,
+            'model_config': dict(config.get('model', {})),
+            'generation_config': dict(config.get('generation', {})),
+            'prompting_config': dict(config.get('prompting', {})),
         },
         'examples': prediction_rows,
     })
