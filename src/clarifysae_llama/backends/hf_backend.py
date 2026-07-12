@@ -64,6 +64,14 @@ class HFCausalBackend:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         # Llama-style causal generation should be left-padded in batch mode.
         self.tokenizer.padding_side = 'left'
+        truncation_side = prompting_cfg.get('truncation_side')
+        if truncation_side is not None:
+            truncation_side = str(truncation_side).strip().lower()
+            if truncation_side not in {'left', 'right'}:
+                raise ValueError(
+                    f'Unsupported tokenizer truncation side: {truncation_side!r}'
+                )
+            self.tokenizer.truncation_side = truncation_side
 
         model_kwargs: dict[str, Any] = {'torch_dtype': self.dtype}
         if model_cfg.get('device_map', None) is not None:
@@ -209,6 +217,77 @@ class HFCausalBackend:
         output = self.model.generate(**inputs, **self.generation_kwargs)
         prompt_width = int(inputs['input_ids'].shape[1])
         return self._decode_new_tokens(self.tokenizer, output[0], prompt_width)
+
+
+    def candidate_tokenization(self, candidates: list[str]) -> list[dict[str, Any]]:
+        """Return tokenization diagnostics for fixed verbalizers."""
+        diagnostics: list[dict[str, Any]] = []
+        for candidate in candidates:
+            token_ids = self.tokenizer(
+                candidate,
+                add_special_tokens=False,
+            )['input_ids']
+            diagnostics.append({
+                'candidate': candidate,
+                'token_ids': [int(token_id) for token_id in token_ids],
+                'tokens': self.tokenizer.convert_ids_to_tokens(token_ids),
+                'n_tokens': len(token_ids),
+            })
+        return diagnostics
+
+    @torch.inference_mode()
+    def score_next_token_candidates_batch(
+        self,
+        prompts: list[str],
+        candidates: list[str],
+    ) -> list[list[float]]:
+        """Score single-token verbalizers at the next generation position.
+
+        This is the appropriate scorer for CLAM's binary ambiguity decision.
+        It avoids comparing mean log-probabilities of differently tokenized
+        words such as ``AMBIGUOUS`` and ``CLEAR``. Every candidate must be a
+        single token under the current model tokenizer.
+        """
+        if not prompts:
+            return []
+        if not candidates:
+            raise ValueError('At least one candidate continuation is required.')
+
+        diagnostics = self.candidate_tokenization(candidates)
+        invalid = [item for item in diagnostics if item['n_tokens'] != 1]
+        if invalid:
+            details = '; '.join(
+                f"{item['candidate']!r} -> {item['tokens']}"
+                for item in invalid
+            )
+            raise ValueError(
+                'CLAM next-token candidates must each tokenize to exactly one '
+                f'token. Invalid verbalizers: {details}'
+            )
+
+        formatted_prompts = self._format_prompts(prompts)
+        inputs = self.tokenizer(
+            formatted_prompts,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+        )
+        inputs = self._inputs_to_model_device(inputs)
+        outputs = self.model(**inputs)
+
+        # Prompts are left padded, so the last column is the final real prompt
+        # token for every row. Its logits predict the first generated token.
+        next_token_log_probs = torch.log_softmax(
+            outputs.logits[:, -1, :].float(),
+            dim=-1,
+        )
+        candidate_ids = torch.tensor(
+            [item['token_ids'][0] for item in diagnostics],
+            dtype=torch.long,
+            device=next_token_log_probs.device,
+        )
+        selected = next_token_log_probs.index_select(dim=-1, index=candidate_ids)
+        return selected.detach().cpu().tolist()
 
 
 

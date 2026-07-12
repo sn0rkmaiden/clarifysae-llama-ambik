@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 import torch
@@ -17,7 +16,12 @@ from clarifysae_llama.data.clam_prompting import (
     build_clam_classification_prompt,
     build_clam_question_prompt,
 )
-from clarifysae_llama.eval.clam_metrics import add_clam_aggregate_metrics, clean_single_question
+from clarifysae_llama.eval.clam_metrics import (
+    add_clam_aggregate_metrics,
+    clean_single_question,
+    classification_summary,
+    select_balanced_accuracy_threshold,
+)
 from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics
 from clarifysae_llama.eval.reporting import save_metric_tables
 from clarifysae_llama.utils.io import ensure_dir, write_json, write_jsonl
@@ -30,6 +34,23 @@ def _load_demonstrations(path: str | Path) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise ValueError('CLAM demonstrations file must contain a JSON list.')
     return [dict(item) for item in payload]
+
+
+def _load_question_output_cache(path: str | Path) -> dict[str, dict[str, Any]]:
+    cache: dict[str, dict[str, Any]] = {}
+    with open(path, 'r', encoding='utf-8') as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            item_id = str(item.get('id', ''))
+            if not item_id:
+                raise ValueError(
+                    f'Missing id in cached question output at line {line_number}'
+                )
+            cache[item_id] = dict(item)
+    return cache
 
 
 def _softmax_pair(ambiguous_score: float, clear_score: float) -> float:
@@ -58,9 +79,109 @@ def _build_rows(dataset: pd.DataFrame, demonstrations: list[dict[str, Any]]) -> 
     return rows
 
 
-def _batched(items: list[Any], batch_size: int):
+def _batched(items: list[Any], batch_size: int) -> Iterable[list[Any]]:
     for start in range(0, len(items), batch_size):
         yield items[start:start + batch_size]
+
+
+def _score_classification_rows(
+    *,
+    backend: HFCausalBackend,
+    rows: list[dict[str, Any]],
+    candidates: list[str],
+    batch_size: int,
+    description: str,
+) -> None:
+    batches = list(_batched(rows, batch_size))
+    for chunk in tqdm(batches, desc=description, unit='batch'):
+        prompts = [row['classification_prompt'] for row in chunk]
+        scores = backend.score_next_token_candidates_batch(prompts, candidates)
+        for row, (ambiguous_score, clear_score) in zip(chunk, scores):
+            true_probability = float(torch.exp(torch.tensor(ambiguous_score, dtype=torch.float64)).item())
+            pair_probability = _softmax_pair(ambiguous_score, clear_score)
+            row['ambiguity_score_ambiguous'] = float(ambiguous_score)
+            row['ambiguity_score_clear'] = float(clear_score)
+            # CLAM uses the next-token log probability of True as the
+            # continuous ambiguity score. The True-vs-False softmax is saved
+            # only as an additional diagnostic.
+            row['ambiguity_probability'] = true_probability
+            row['ambiguity_pair_probability'] = pair_probability
+
+
+def _apply_threshold(rows: list[dict[str, Any]], threshold: float) -> None:
+    for row in rows:
+        row['predicted_ambiguous'] = bool(
+            float(row['ambiguity_score_ambiguous']) >= threshold
+        )
+
+
+def _calibrate_threshold(
+    *,
+    backend: HFCausalBackend,
+    calibration_config: dict[str, Any],
+    demonstrations: list[dict[str, Any]],
+    candidates: list[str],
+    batch_size: int,
+    pred_dir: Path,
+) -> tuple[float, dict[str, Any]]:
+    objective = str(calibration_config.get('objective', 'balanced_accuracy'))
+    if objective != 'balanced_accuracy':
+        raise ValueError(
+            f'Unsupported CLAM threshold objective: {objective!r}. '
+            'Only balanced_accuracy is implemented.'
+        )
+
+    calibration_dataset = load_ambik_selective_dataset(
+        calibration_config['path'],
+        limit_pairs=calibration_config.get('limit'),
+        include_unambiguous_pairs=True,
+    )
+    calibration_rows = _build_rows(calibration_dataset, demonstrations)
+    eligible_rows = [
+        row for row in calibration_rows
+        if bool(row.get('classification_eligible', True))
+    ]
+    if not eligible_rows:
+        raise ValueError('No classification-eligible threshold-calibration examples found.')
+
+    _score_classification_rows(
+        backend=backend,
+        rows=eligible_rows,
+        candidates=candidates,
+        batch_size=batch_size,
+        description='CLAM threshold calibration',
+    )
+    threshold, selected_summary = select_balanced_accuracy_threshold(
+        [bool(row['gold_ambiguous']) for row in eligible_rows],
+        [float(row['ambiguity_score_ambiguous']) for row in eligible_rows],
+    )
+    _apply_threshold(eligible_rows, threshold)
+    selected_summary = classification_summary(eligible_rows) | {
+        'threshold': threshold,
+        'dataset_path': str(calibration_config['path']),
+        'n_source_pairs_loaded': int(len(calibration_dataset) // 2),
+        'n_excluded_identical_examples': int(len(calibration_rows) - len(eligible_rows)),
+    }
+
+    calibration_predictions = [
+        {
+            'id': row['id'],
+            'source_id': row['source_id'],
+            'variant': row['variant'],
+            'source_ambiguity_type': row.get('source_ambiguity_type'),
+            'gold_ambiguous': bool(row['gold_ambiguous']),
+            'ambiguity_score_ambiguous': row['ambiguity_score_ambiguous'],
+            'ambiguity_score_clear': row['ambiguity_score_clear'],
+            'ambiguity_probability': row['ambiguity_probability'],
+            'ambiguity_pair_probability': row['ambiguity_pair_probability'],
+            'predicted_ambiguous': bool(row['predicted_ambiguous']),
+            'classification_prompt': row['classification_prompt'],
+        }
+        for row in eligible_rows
+    ]
+    write_jsonl(pred_dir / 'threshold_calibration_predictions.jsonl', calibration_predictions)
+    write_json(pred_dir / 'threshold_calibration_summary.json', selected_summary)
+    return threshold, selected_summary
 
 
 def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
@@ -85,46 +206,122 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
     backend = HFCausalBackend(config)
 
     batch_size = int(config.get('batching', {}).get('batch_size', 1))
-    threshold = float(clam_cfg.get('decision_threshold', 0.5))
     candidate_text = clam_cfg.get('candidate_text', {})
-    ambiguous_candidate = str(candidate_text.get('ambiguous', ' AMBIGUOUS'))
-    clear_candidate = str(candidate_text.get('clear', ' CLEAR'))
+    ambiguous_candidate = str(candidate_text.get('ambiguous', 'True'))
+    clear_candidate = str(candidate_text.get('clear', 'False'))
     candidates = [ambiguous_candidate, clear_candidate]
-    length_normalize = bool(clam_cfg.get('length_normalize_scores', True))
+    tokenization = backend.candidate_tokenization(candidates)
+    invalid_verbalizers = [item for item in tokenization if item['n_tokens'] != 1]
+    if invalid_verbalizers:
+        details = '; '.join(
+            f"{item['candidate']!r} -> {item['tokens']}"
+            for item in invalid_verbalizers
+        )
+        raise ValueError(
+            'The configured CLAM True/False verbalizers are not single tokens '
+            f'for {config["model"]["name"]}: {details}. Choose two single-token '
+            'verbalizers and use them consistently in the prompt builder.'
+        )
+
+    calibration_cfg = dict(clam_cfg.get('threshold_calibration') or {})
+    if calibration_cfg.get('path'):
+        threshold, calibration_summary = _calibrate_threshold(
+            backend=backend,
+            calibration_config=calibration_cfg,
+            demonstrations=demonstrations,
+            candidates=candidates,
+            batch_size=batch_size,
+            pred_dir=pred_dir,
+        )
+        threshold_source = 'held_out_calibration'
+    else:
+        configured_threshold = clam_cfg.get('decision_threshold')
+        if configured_threshold is None:
+            raise ValueError(
+                'Set clam.threshold_calibration.path for held-out threshold '
+                'selection, or provide an explicit clam.decision_threshold.'
+            )
+        threshold = float(configured_threshold)
+        calibration_summary = None
+        threshold_source = 'fixed_config'
 
     print(f'\n=== run_clam_eval :: {experiment_name} ===')
     print(f'pairs: {len(dataset) // 2 if include_pairs else len(dataset)} | examples: {len(dataset)}')
-    print(f'decision threshold: {threshold} | candidates: {candidates}')
+    print(f'candidates: {candidates}')
+    print(f'candidate tokenization: {tokenization}')
+    print(f'decision threshold on log p(True): {threshold:.8f} ({threshold_source})')
 
-    classification_batches = list(_batched(rows, batch_size))
-    for chunk in tqdm(classification_batches, desc='CLAM stage 1: classify', unit='batch'):
-        prompts = [row['classification_prompt'] for row in chunk]
-        scores = backend.score_candidate_continuations_batch(
-            prompts,
-            candidates,
-            length_normalize=length_normalize,
+    _score_classification_rows(
+        backend=backend,
+        rows=rows,
+        candidates=candidates,
+        batch_size=batch_size,
+        description='CLAM stage 1: classify',
+    )
+    _apply_threshold(rows, threshold)
+
+    # Generate a question for every gold-ambiguous example to preserve the
+    # oracle-gated diagnostic. For clear examples, generate only when the
+    # predicted gate fires and the pair has non-contradictory labels.
+    question_rows = [
+        row for row in rows
+        if bool(row['gold_ambiguous'])
+        or (
+            bool(row['predicted_ambiguous'])
+            and bool(row.get('classification_eligible', True))
         )
-        for row, (ambiguous_score, clear_score) in zip(chunk, scores):
-            probability = _softmax_pair(ambiguous_score, clear_score)
-            row['ambiguity_score_ambiguous'] = ambiguous_score
-            row['ambiguity_score_clear'] = clear_score
-            row['ambiguity_probability'] = probability
-            row['predicted_ambiguous'] = bool(probability >= threshold)
+    ]
+    question_row_ids = {str(row['id']) for row in question_rows}
+    cached_outputs_path = clam_cfg.get('reuse_question_outputs_from')
+    if cached_outputs_path:
+        question_cache = _load_question_output_cache(cached_outputs_path)
+        missing_ids = sorted(question_row_ids.difference(question_cache))
+        if missing_ids:
+            raise ValueError(
+                f'Cached CLAM outputs are missing {len(missing_ids)} required ids; '
+                f'first missing ids: {missing_ids[:5]}'
+            )
+        question_chunks = [question_rows]
+        question_output_source = f'cache:{cached_outputs_path}'
+    else:
+        question_cache = {}
+        question_chunks = list(_batched(question_rows, batch_size))
+        question_output_source = 'generated'
 
-    # Generate stage-2 questions for every gold-ambiguous example. This gives
-    # both (a) the end-to-end CLAM result, gated by the predicted label, and
-    # (b) an oracle-gated question-generation diagnostic that is directly
-    # comparable to ClarifySAE's ambiguity-known evaluation setting.
-    question_rows = [row for row in rows if bool(row['gold_ambiguous']) or row['predicted_ambiguous']]
-    question_batches = list(_batched(question_rows, batch_size))
-    for chunk in tqdm(question_batches, desc='CLAM stage 2: ask', unit='batch'):
-        raw_outputs = backend.generate_batch([row['question_prompt'] for row in chunk])
+    for chunk in tqdm(question_chunks, desc='CLAM stage 2: ask', unit='batch'):
+        if cached_outputs_path:
+            raw_outputs = []
+            for row in chunk:
+                cached = question_cache[str(row['id'])]
+                if bool(row['gold_ambiguous']):
+                    raw_output = (
+                        cached.get('raw_oracle_question_output')
+                        or cached.get('raw_question_output')
+                        or ''
+                    )
+                else:
+                    raw_output = cached.get('raw_question_output') or ''
+                if not str(raw_output).strip():
+                    raise ValueError(
+                        f'Cached CLAM output for {row["id"]} has no reusable raw question.'
+                    )
+                raw_outputs.append(str(raw_output))
+        else:
+            raw_outputs = backend.generate_batch([row['question_prompt'] for row in chunk])
+
         for row, raw_output in zip(chunk, raw_outputs):
             cleaned = clean_single_question(raw_output)
             row['raw_oracle_question_output'] = raw_output if bool(row['gold_ambiguous']) else ''
             row['oracle_generated_question'] = cleaned if bool(row['gold_ambiguous']) else ''
-            row['raw_question_output'] = raw_output if row['predicted_ambiguous'] else ''
-            row['generated_question'] = cleaned if row['predicted_ambiguous'] else ''
+            use_end_to_end = bool(
+                row['predicted_ambiguous']
+                and (
+                    bool(row['gold_ambiguous'])
+                    or bool(row.get('classification_eligible', True))
+                )
+            )
+            row['raw_question_output'] = raw_output if use_end_to_end else ''
+            row['generated_question'] = cleaned if use_end_to_end else ''
 
     for row in rows:
         row.setdefault('raw_question_output', '')
@@ -149,11 +346,11 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             nli_threshold=nli_threshold,
             enable_nli=enable_nli,
         )
-        # The explicit pair label is authoritative for this runner.
         metrics['gold_ambiguous'] = bool(row['gold_ambiguous'])
         metrics['ambiguity_decision_correct'] = bool(
             row['predicted_ambiguous'] == row['gold_ambiguous']
         )
+
         oracle_questions = [row['oracle_generated_question']] if row['oracle_generated_question'] else []
         oracle_metrics = compute_example_metrics(
             ambiguity_type=str(row['ambiguity_type']),
@@ -170,15 +367,19 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             'source_id': row['source_id'],
             'variant': row['variant'],
             'ambiguity_type': row['ambiguity_type'],
+            'source_ambiguity_type': row.get('source_ambiguity_type'),
+            'classification_eligible': bool(row.get('classification_eligible', True)),
+            'pair_texts_identical': bool(row.get('pair_texts_identical', False)),
             'environment': row['environment_full'],
             'instruction': row['task'],
             'gold_question': row['gold_question'],
             'gold_ambiguous': bool(row['gold_ambiguous']),
             'classification_prompt': row['classification_prompt'],
-            'question_prompt': row['question_prompt'] if row['predicted_ambiguous'] else None,
+            'question_prompt': row['question_prompt'] if str(row['id']) in question_row_ids else None,
             'ambiguity_score_ambiguous': row['ambiguity_score_ambiguous'],
             'ambiguity_score_clear': row['ambiguity_score_clear'],
             'ambiguity_probability': row['ambiguity_probability'],
+            'ambiguity_pair_probability': row['ambiguity_pair_probability'],
             'predicted_ambiguous': bool(row['predicted_ambiguous']),
             'raw_question_output': row['raw_question_output'],
             'generated_question': row['generated_question'],
@@ -199,8 +400,12 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             'dataset_path': config['dataset']['path'],
             'include_unambiguous_pairs': include_pairs,
             'decision_threshold': threshold,
+            'threshold_source': threshold_source,
+            'threshold_calibration': calibration_summary,
             'candidates': candidates,
+            'candidate_tokenization': tokenization,
             'demonstrations_path': clam_cfg['demonstrations_path'],
+            'question_output_source': question_output_source,
         },
         'examples': prediction_rows,
     })

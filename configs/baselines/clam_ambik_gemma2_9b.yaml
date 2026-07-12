@@ -1,48 +1,41 @@
 experiment_name: clam_ambik_gemma2_9b
 seed: 42
-
 model:
   name: google/gemma-2-9b-it
   backend: hf
   torch_dtype: bfloat16
   device_map: auto
   attn_implementation: null
-
-# Used only for stage-2 question generation. Stage 1 uses candidate scoring.
 generation:
   max_new_tokens: 48
   do_sample: false
   temperature: 0.0
   top_p: 1.0
-
 prompting:
-  use_chat_template: auto
-  system_prompt: ""
-
+  use_chat_template: true
+  system_prompt: ''
+  truncation_side: left
 steering:
   enabled: false
-
 batching:
   batch_size: 1
-
 dataset:
-  # Use a held-out paired AmbiK CSV containing both ambiguous_task and
-  # unambiguous_direct. Do not use the examples used to build the demo file.
-  path: data/raw/ambik/AmbiK_data.csv
-  limit: 100
+  path: data/raw/ambik/ambik_calib_100.csv
+  limit: null
   include_unambiguous_pairs: true
-
 clam:
-  demonstrations_path: data/prompts/clam_ambik_demos.example.json
+  demonstrations_path: data/prompts/clam_ambik_demos.json
   candidate_text:
-    ambiguous: " AMBIGUOUS"
-    clear: " CLEAR"
-  decision_threshold: 0.5
-  length_normalize_scores: true
-
+    ambiguous: 'True'
+    clear: 'False'
+  decision_threshold: null
+  threshold_calibration:
+    path: data/raw/ambik/ambik_clam_threshold_50.csv
+    limit: null
+    objective: balanced_accuracy
+  reuse_question_outputs_from: null
 output:
   root_dir: outputs
-
 evaluation:
   embed_threshold: 0.75
   enable_nli: false

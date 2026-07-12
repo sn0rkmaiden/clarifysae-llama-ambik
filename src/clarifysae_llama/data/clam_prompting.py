@@ -4,12 +4,12 @@ from typing import Any
 
 
 CLASSIFICATION_HEADER = """You are evaluating instructions for a kitchen robot.
-Decide whether the instruction is ambiguous in the described environment.
+Judge whether the instruction leaves a task-relevant choice or condition unspecified in the described environment.
 
-AMBIGUOUS means that multiple plausible task executions remain and the missing choice should be requested from the user before acting.
-CLEAR means that the intended execution is sufficiently specified by the instruction, environment, and ordinary task knowledge.
+Answer True if more than one plausible execution remains and the missing information should be clarified before acting.
+Answer False if the instruction itself specifies a single sufficiently determined execution.
 
-Return only one label: AMBIGUOUS or CLEAR.
+Return only True or False. Do not explain your answer.
 """
 
 
@@ -30,16 +30,27 @@ def build_clam_classification_prompt(
     task: str,
     demonstrations: list[dict[str, Any]],
 ) -> str:
+    """Build the CLAM-style binary ambiguity prompt.
+
+    Demonstration files keep the human-readable labels ``AMBIGUOUS`` and
+    ``CLEAR``. They are rendered as ``True`` and ``False`` because the
+    classifier is scored from the next-token probabilities of those two
+    verbalizers, following the decomposition used by CLAM.
+    """
     parts = [CLASSIFICATION_HEADER]
     for demo in demonstrations:
         label = str(demo['label']).strip().upper()
         if label not in {'AMBIGUOUS', 'CLEAR'}:
             raise ValueError(f"Unsupported CLAM demonstration label: {label!r}")
+        truth_value = 'True' if label == 'AMBIGUOUS' else 'False'
         parts.append(
             _format_case(str(demo['environment']), str(demo['task']))
-            + f"\nLabel: {label}\n"
+            + f"\nThis instruction is ambiguous: {truth_value}\n"
         )
-    parts.append(_format_case(environment, task) + "\nLabel:")
+    parts.append(
+        _format_case(environment, task)
+        + "\nThis instruction is ambiguous:"
+    )
     return "\n".join(parts)
 
 

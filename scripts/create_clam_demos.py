@@ -22,8 +22,9 @@ REQUIRED_COLUMNS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create balanced CLAM few-shot demonstrations from AmbiK splits "
-            "without overlapping the calibration or reserved test examples."
+            "Create balanced CLAM few-shot demonstrations and an optional "
+            "held-out threshold-calibration split from AmbiK without overlap "
+            "with the current evaluation or reserved test examples."
         )
     )
     parser.add_argument("--calib", required=True, type=Path)
@@ -34,7 +35,19 @@ def parse_args() -> argparse.Namespace:
         "--pairs-per-category",
         type=int,
         default=1,
-        help="Number of ambiguous/clear source pairs per ambiguity type (default: 1).",
+        help="Number of ambiguous/clear demo pairs per ambiguity type (default: 1).",
+    )
+    parser.add_argument(
+        "--threshold-output",
+        type=Path,
+        default=None,
+        help="Optional CSV path for a disjoint threshold-calibration split.",
+    )
+    parser.add_argument(
+        "--threshold-pairs",
+        type=int,
+        default=50,
+        help="Number of source pairs in the threshold-calibration split (default: 50).",
     )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -69,10 +82,61 @@ def source_label(row: pd.Series) -> str:
     return str(row.name)
 
 
+def balanced_sample_by_category(
+    pool: pd.DataFrame,
+    *,
+    n: int,
+    seed: int,
+) -> pd.DataFrame:
+    if n < 1:
+        raise ValueError("Sample size must be at least 1")
+    if len(pool) < n:
+        raise ValueError(f"Need {n} rows but only {len(pool)} are available")
+
+    categories = sorted(pool["ambiguity_type"].dropna().astype(str).unique())
+    if not categories:
+        raise ValueError("No ambiguity categories are available")
+
+    base, remainder = divmod(n, len(categories))
+    selected_parts: list[pd.DataFrame] = []
+    used_indices: set[int] = set()
+
+    for category_index, category in enumerate(categories):
+        target = base + (1 if category_index < remainder else 0)
+        if target == 0:
+            continue
+        group = pool[pool["ambiguity_type"].astype(str) == category]
+        if len(group) < target:
+            raise ValueError(
+                f"Not enough rows for category {category!r}: need {target}, found {len(group)}"
+            )
+        sampled = group.sample(
+            n=target,
+            random_state=seed + category_index,
+            replace=False,
+        )
+        selected_parts.append(sampled)
+        used_indices.update(int(index) for index in sampled.index)
+
+    selected = pd.concat(selected_parts, axis=0)
+    if len(selected) < n:
+        remainder_pool = pool[~pool.index.isin(used_indices)]
+        extra = remainder_pool.sample(
+            n=n - len(selected),
+            random_state=seed + 10_000,
+            replace=False,
+        )
+        selected = pd.concat([selected, extra], axis=0)
+
+    return selected.sample(frac=1.0, random_state=seed).copy()
+
+
 def main() -> None:
     args = parse_args()
     if args.pairs_per_category < 1:
         raise ValueError("--pairs-per-category must be at least 1")
+    if args.threshold_pairs < 1:
+        raise ValueError("--threshold-pairs must be at least 1")
 
     calib = pd.read_csv(args.calib)
     test400 = pd.read_csv(args.test400)
@@ -122,7 +186,7 @@ def main() -> None:
         != normalize(pool["unambiguous_direct"]).str.casefold()
     ].copy()
 
-    print(f"Eligible demonstration pool: {len(pool)} rows")
+    print(f"Eligible source pool: {len(pool)} rows")
     print("Eligible rows by ambiguity type:")
     print(pool["ambiguity_type"].value_counts().to_string())
 
@@ -150,7 +214,6 @@ def main() -> None:
         ambiguous_task = str(row["ambiguous_task"]).strip()
         clear_task = str(row["unambiguous_direct"]).strip()
         question = str(row["question"]).strip()
-
         demonstrations.append(
             {
                 "environment": environment,
@@ -172,13 +235,30 @@ def main() -> None:
         json.dump(demonstrations, file, indent=2, ensure_ascii=False)
 
     print(f"\nSaved {len(demonstrations)} demonstrations to: {args.output}")
-    print("Selected source rows:")
+    print("Selected demonstration source rows:")
     for _, row in selected.iterrows():
         print(
             f"  source={source_label(row)}, "
             f"type={row['ambiguity_type']}, "
             f"question={row['question']}"
         )
+
+    if args.threshold_output is not None:
+        threshold_pool = pool[~pool.index.isin(selected.index)].copy()
+        threshold_rows = balanced_sample_by_category(
+            threshold_pool,
+            n=args.threshold_pairs,
+            seed=args.seed + 1_000,
+        )
+        threshold_rows = threshold_rows.drop(columns=['_example_key'], errors='ignore')
+        args.threshold_output.parent.mkdir(parents=True, exist_ok=True)
+        threshold_rows.to_csv(args.threshold_output, index=False)
+        print(
+            f"\nSaved {len(threshold_rows)} disjoint threshold-calibration "
+            f"source pairs to: {args.threshold_output}"
+        )
+        print("Threshold rows by ambiguity type:")
+        print(threshold_rows['ambiguity_type'].value_counts().to_string())
 
 
 if __name__ == "__main__":

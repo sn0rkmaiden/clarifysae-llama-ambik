@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -27,6 +29,16 @@ def _ensure_id_column(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.insert(0, 'id', range(len(df)))
     return df
+
+
+def _clean_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ''
+    return str(value).strip()
+
+
+def _normalize_task_text(value: Any) -> str:
+    return re.sub(r'\s+', ' ', _clean_text(value)).casefold()
 
 
 def load_ambik_clarification_dataset(path: str | Path, limit: int | None = None) -> pd.DataFrame:
@@ -72,9 +84,13 @@ def load_ambik_selective_dataset(
 
     Each source row contributes its ``ambiguous_task``. When
     ``include_unambiguous_pairs`` is true, the paired ``unambiguous_direct``
-    instruction is also included. This is required to evaluate CLAM's
-    selectivity and over-asking behavior rather than only question quality on
-    already-known ambiguous inputs.
+    instruction is also included.
+
+    Some AmbiK rows contain textually identical ambiguous and clear variants.
+    Both variants are retained for oracle-gated question-generation analysis,
+    but they are marked ``classification_eligible=False`` so that a
+    deterministic classifier is not evaluated against contradictory labels for
+    the same input.
     """
     df = pd.read_csv(path)
     df = _ensure_id_column(df)
@@ -94,30 +110,44 @@ def load_ambik_selective_dataset(
     if limit_pairs is not None:
         df = df.head(limit_pairs).copy()
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for _, row in df.iterrows():
-        source_id = str(row['id'])
+        source_id = _clean_text(row['id'])
+        ambiguous_task = _clean_text(row['ambiguous_task'])
+        clear_task = _clean_text(row.get('unambiguous_direct', ''))
+        pair_texts_identical = bool(
+            include_unambiguous_pairs
+            and _normalize_task_text(ambiguous_task) == _normalize_task_text(clear_task)
+        )
+        classification_eligible = bool(
+            include_unambiguous_pairs and not pair_texts_identical
+        )
+        source_ambiguity_type = _clean_text(row['ambiguity_type'])
+
         common = {
             'source_id': source_id,
-            'environment_full': str(row['environment_full']),
-            'gold_answer': str(row.get('answer', '') or ''),
-            'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
+            'environment_full': _clean_text(row['environment_full']),
+            'source_ambiguity_type': source_ambiguity_type,
+            'gold_answer': _clean_text(row.get('answer', '')),
+            'gold_plan_for_clear': _clean_text(row.get('plan_for_clear_task', '')),
+            'pair_texts_identical': pair_texts_identical,
+            'classification_eligible': classification_eligible,
         }
         rows.append({
             **common,
             'id': f'{source_id}:ambiguous',
             'variant': 'ambiguous',
-            'task': str(row['ambiguous_task']),
-            'ambiguity_type': str(row['ambiguity_type']),
+            'task': ambiguous_task,
+            'ambiguity_type': source_ambiguity_type,
             'gold_ambiguous': True,
-            'gold_question': str(row.get('question', '') or ''),
+            'gold_question': _clean_text(row.get('question', '')),
         })
         if include_unambiguous_pairs:
             rows.append({
                 **common,
                 'id': f'{source_id}:clear',
                 'variant': 'clear',
-                'task': str(row['unambiguous_direct']),
+                'task': clear_task,
                 'ambiguity_type': 'unambiguous_direct',
                 'gold_ambiguous': False,
                 'gold_question': '',
