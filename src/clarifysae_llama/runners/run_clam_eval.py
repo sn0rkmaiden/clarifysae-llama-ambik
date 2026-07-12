@@ -329,29 +329,58 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
         clam_cfg.get('classification_demonstrations_path')
         or legacy_demonstrations_path
     )
-    question_demonstrations_path = (
-        clam_cfg.get('question_demonstrations_path')
-        or legacy_demonstrations_path
+    question_generation_mode = str(
+        clam_cfg.get('question_generation_mode', 'few_shot')
+    ).strip().lower()
+    if question_generation_mode not in {'few_shot', 'zero_shot'}:
+        raise ValueError(
+            'clam.question_generation_mode must be either '
+            f'"few_shot" or "zero_shot", got {question_generation_mode!r}.'
+        )
+
+    configured_question_demonstrations_path = clam_cfg.get(
+        'question_demonstrations_path'
     )
+    if question_generation_mode == 'few_shot':
+        question_demonstrations_path = (
+            configured_question_demonstrations_path
+            or legacy_demonstrations_path
+        )
+    else:
+        question_demonstrations_path = None
+
     if not classification_demonstrations_path:
         raise ValueError(
             'Set clam.classification_demonstrations_path. The legacy '
             'clam.demonstrations_path is also accepted for compatibility.'
         )
-    if not question_demonstrations_path:
-        raise ValueError(
-            'Set clam.question_demonstrations_path. The legacy '
-            'clam.demonstrations_path is also accepted for compatibility.'
-        )
+
     classification_demonstrations = _load_demonstrations(
         classification_demonstrations_path
     )
-    question_demonstrations = _load_demonstrations(
-        question_demonstrations_path
-    )
     _validate_classification_demonstrations(classification_demonstrations)
-    _validate_question_demonstrations(question_demonstrations)
-    if Path(classification_demonstrations_path) != Path(question_demonstrations_path):
+
+    if question_generation_mode == 'few_shot':
+        if not question_demonstrations_path:
+            raise ValueError(
+                'Set clam.question_demonstrations_path when '
+                'clam.question_generation_mode is "few_shot".'
+            )
+        question_demonstrations = _load_demonstrations(
+            question_demonstrations_path
+        )
+        _validate_question_demonstrations(question_demonstrations)
+    else:
+        # Zero-shot Stage 2 intentionally uses only QUESTION_HEADER plus the
+        # current environment and instruction. This avoids demonstration
+        # copying while leaving CLAM's few-shot Stage 1 unchanged.
+        question_demonstrations = []
+
+    if (
+        question_demonstrations_path is not None
+        and Path(classification_demonstrations_path)
+        != Path(question_demonstrations_path)
+    ):
         shared_source_ids = (
             _demonstration_source_ids(classification_demonstrations)
             & _demonstration_source_ids(question_demonstrations)
@@ -440,10 +469,13 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
         f'{classification_demonstrations_path} '
         f'({len(classification_demonstrations)})'
     )
-    print(
-        'question demonstrations: '
-        f'{question_demonstrations_path} ({len(question_demonstrations)})'
-    )
+    if question_generation_mode == 'zero_shot':
+        print('question generation: zero-shot (0 demonstrations)')
+    else:
+        print(
+            'question demonstrations: '
+            f'{question_demonstrations_path} ({len(question_demonstrations)})'
+        )
     print(f'candidate tokenization: {tokenization}')
     print(f'decision threshold on log p(True): {threshold:.8f} ({threshold_source})')
     print(f'classification outputs: {classification_output_source}')
@@ -605,7 +637,12 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
             'classification_demonstrations_path': str(
                 classification_demonstrations_path
             ),
-            'question_demonstrations_path': str(question_demonstrations_path),
+            'question_generation_mode': question_generation_mode,
+            'question_demonstrations_path': (
+                str(question_demonstrations_path)
+                if question_demonstrations_path is not None
+                else None
+            ),
             'n_classification_demonstrations': len(
                 classification_demonstrations
             ),

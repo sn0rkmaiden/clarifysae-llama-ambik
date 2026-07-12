@@ -1,4 +1,4 @@
-experiment_name: clam_ambik_llama32_1b_diverse_qdemos
+experiment_name: clam_ambik_llama32_1b_zero_shot_qgen
 seed: 42
 model:
   name: unsloth/Llama-3.2-1B-Instruct
@@ -37,8 +37,9 @@ clam:
     objective: balanced_accuracy
   reuse_question_outputs_from: null
   classification_demonstrations_path: data/prompts/clam_classification_demos.json
-  question_demonstrations_path: data/prompts/clam_question_demos.json
-  reuse_classification_from: outputs/clam_ambik_llama32_1b/predictions/results.json
+  question_generation_mode: zero_shot
+  question_demonstrations_path: null
+  reuse_classification_from: outputs/clam_ambik_llama32_1b_diverse_qdemos/predictions/results.json
 output:
   root_dir: outputs
 evaluation:
