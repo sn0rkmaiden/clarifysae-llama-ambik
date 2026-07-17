@@ -34,11 +34,32 @@ class SteeredHFCausalBackend(HFCausalBackend):
                 clamp_latents=runtime_cfg.get("clamp_latents"),
                 log_feature_acts=runtime_cfg.get("log_feature_acts", False),
                 max_act=steering_cfg.get("max_act", runtime_cfg.get("max_act")),
+                feature_scales=steering_cfg.get("feature_scales"),
+                scale_method=steering_cfg.get("scale_method"),
                 feature_weights=steering_cfg.get("feature_weights"),
                 normalize_each=bool(steering_cfg.get("normalize_each", runtime_cfg.get("normalize_each", False))),
                 norm_cap=steering_cfg.get("norm_cap", runtime_cfg.get("norm_cap")),
             ),
         )
+
+
+    def provenance_metadata(self) -> dict:
+        metadata = super().provenance_metadata()
+        cfg = self.steering.config
+        metadata['steering'] = {
+            'sae_repo': cfg.sae_repo,
+            'sae_file': cfg.sae_file,
+            'sae_id': cfg.sae_id,
+            'loader': cfg.loader,
+            'hookpoint': cfg.hookpoint,
+            'module_path': cfg.module_path,
+            'feature_indices': list(cfg.feature_indices),
+            'feature_scales': cfg.feature_scales,
+            'scale_method': cfg.scale_method,
+            'strength': cfg.strength,
+            'mode': cfg.mode,
+        }
+        return metadata
 
     def generate(self, prompt: str) -> str:
         self.steering.reset()

@@ -1,0 +1,28 @@
+experiment:
+  name: ambik_confirm_v1
+  phase: confirm
+  seed: 20260717
+  output_root: outputs/manifest_runs
+  dataset_profile: configs/datasets/ambik_v1.yaml
+  decoding_profile: configs/decoding/ambik_deterministic.yaml
+  metrics_profile: configs/metrics/ambik_metrics.yaml
+  model_profiles:
+    - configs/models/gemma2b.yaml
+    - configs/models/gemma9b.yaml
+    - configs/models/llama1b.yaml
+    - configs/models/llama8b.yaml
+  split_name: confirm600
+  instruction_variant: paired
+
+features:
+  selected_conditions: artifacts/selection/ambik_explore_v1_selected_alpha.csv
+
+steering:
+  scale:
+    method: positive_q95
+    artifact: artifacts/feature_scales/ambik_v1_feature_scales.csv
+
+execution:
+  include_baselines: true
+  generation_seed: 0
+  resume: true

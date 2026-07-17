@@ -263,6 +263,8 @@ def _calibrate_threshold(
         calibration_config['path'],
         limit_pairs=calibration_config.get('limit'),
         include_unambiguous_pairs=True,
+        split_manifest=calibration_config.get('split_manifest'),
+        split_name=calibration_config.get('split_name'),
     )
     calibration_rows = _build_rows(
         calibration_dataset,
@@ -396,6 +398,8 @@ def run_clam_eval(config: dict[str, Any]) -> dict[str, Any]:
         config['dataset']['path'],
         limit_pairs=config['dataset'].get('limit'),
         include_unambiguous_pairs=include_pairs,
+        split_manifest=config['dataset'].get('split_manifest'),
+        split_name=config['dataset'].get('split_name'),
     )
     rows = _build_rows(
         dataset,

@@ -26,6 +26,10 @@ class SteeringConfig:
     clamp_latents: Optional[float] = None
     log_feature_acts: bool = False
     max_act: Optional[float] = None
+    # Preferred normalized steering: one fixed reference activation per feature.
+    # The effective intervention is strength * feature_scale_j.
+    feature_scales: Optional[list[float]] = None
+    scale_method: Optional[str] = None
 
     # Multi-feature controls. These mirror the old AmbiK Gemma combine mode:
     # v_S = sum_j weight_j * max_act_j * decoder_j, then h' = h + strength * v_S.

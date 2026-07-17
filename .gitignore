@@ -9,3 +9,16 @@ data/raw/**
 !data/raw/.gitkeep
 *.log
 .DS_Store
+# External experiment outputs copied from the server.
+clam/**
+!clam/.gitkeep
+visualization/data/**
+!visualization/data/.gitkeep
+
+# Local scheduler logs.
+slurm/logs/**
+!slurm/logs/.gitkeep
+
+# Canonical AmbiK data is generated from source exports and is not committed.
+data/raw/ambik/*.csv
+data/processed/ambik/*.csv

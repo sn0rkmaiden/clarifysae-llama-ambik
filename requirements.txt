@@ -9,3 +9,7 @@ safetensors>=0.4
 eai-sparsify
 datasets>=2.20
 sentence-transformers>=3.0
+huggingface-hub>=0.24
+sae-lens>=5.0
+dictionary-learning
+bitsandbytes>=0.43

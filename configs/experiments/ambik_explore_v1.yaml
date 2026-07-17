@@ -1,0 +1,30 @@
+experiment:
+  name: ambik_explore_v1
+  phase: explore
+  seed: 20260717
+  output_root: outputs/manifest_runs
+  dataset_profile: configs/datasets/ambik_v1.yaml
+  decoding_profile: configs/decoding/ambik_deterministic.yaml
+  metrics_profile: configs/metrics/ambik_metrics.yaml
+  model_profiles:
+    - configs/models/gemma2b.yaml
+    - configs/models/gemma9b.yaml
+    - configs/models/llama1b.yaml
+    - configs/models/llama8b.yaml
+  split_name: explore400
+  instruction_variant: paired
+
+features:
+  catalog: manifests/feature_catalog.csv
+  enabled_only: true
+
+steering:
+  scale:
+    method: positive_q95
+    artifact: artifacts/feature_scales/ambik_v1_feature_scales.csv
+  alpha: [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]
+
+execution:
+  include_baselines: true
+  generation_seed: 0
+  resume: true

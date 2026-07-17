@@ -164,7 +164,7 @@ class helpers(helper):
                 knowledge = "\n{0}'s missing information and its purpose:\n".format(self.task_data[0]) + '\n'.join(numbered_gold) + '\n'
             else:
                 numbered_gold = [f'({i+1}) {line}' for i, line in enumerate(self.gold)]
-                knowledge = '\Task detail information:\n' + '\n'.join(numbered_gold) + '\n'
+                knowledge = 'Task detail information:\n' + '\n'.join(numbered_gold) + '\n'
 
             end = "\nIdentify which type the last sentence spoken by {0} falls into from the following options:\n1. Inquiring and confirming about the entire {1} task.\n2. Asking clear questions about task details, with a line of missing information that can respond to {0}'s query.\n3. Asking clear questions about task details, but there is no line of information that can can respond to {0}'s query.\n4. Repeating a question that has already been answered by Jax in previous conversations.\n5. Consulting or chatting unrelated to the task.\n6. Asking questions about task details that are ambiguous and can cause confusion, or directly asking some vague questions (for example: What's the next step? What else should be paid attention to? Any other details?).\nReturn a JSON object containing a 'type' key: the value of the 'type' key is from 1 to 6, corresponding to the six different types of conversation purposes. The format should be as follows: {{ 'type': 1 to 6 }}.".format(self.task_data[0], self.task_data[1])
             return start + previous_content + knowledge + end

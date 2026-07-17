@@ -59,7 +59,14 @@ class HFCausalBackend:
             'You are a careful assistant. Follow the user instruction exactly and return only the requested output format.',
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        revision = model_cfg.get('revision')
+        self.requested_revision = revision
+        tokenizer_kwargs: dict[str, Any] = {}
+        if revision is not None:
+            tokenizer_kwargs['revision'] = revision
+        if model_cfg.get('trust_remote_code') is not None:
+            tokenizer_kwargs['trust_remote_code'] = bool(model_cfg['trust_remote_code'])
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, **tokenizer_kwargs)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         # Llama-style causal generation should be left-padded in batch mode.
@@ -74,6 +81,10 @@ class HFCausalBackend:
             self.tokenizer.truncation_side = truncation_side
 
         model_kwargs: dict[str, Any] = {'torch_dtype': self.dtype}
+        if revision is not None:
+            model_kwargs['revision'] = revision
+        if model_cfg.get('trust_remote_code') is not None:
+            model_kwargs['trust_remote_code'] = bool(model_cfg['trust_remote_code'])
         if model_cfg.get('device_map', None) is not None:
             model_kwargs['device_map'] = model_cfg['device_map']
         if model_cfg.get('attn_implementation', None) is not None:
@@ -97,8 +108,19 @@ class HFCausalBackend:
 
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
         self.model.eval()
+        self.resolved_revision = getattr(self.model.config, '_commit_hash', None) or revision
 
         self.generation_kwargs = normalize_generation_kwargs(generation_cfg, self.tokenizer)
+
+
+    def provenance_metadata(self) -> dict[str, Any]:
+        return {
+            'model_name': self.model_name,
+            'requested_revision': self.requested_revision,
+            'resolved_revision': self.resolved_revision,
+            'torch_dtype': str(self.dtype),
+            'chat_template_used': self._should_use_chat_template(),
+        }
 
     def _model_input_device(self) -> torch.device:
         # With device_map='auto' some parameters may be meta/CPU-offloaded. The

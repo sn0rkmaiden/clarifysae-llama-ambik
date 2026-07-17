@@ -212,6 +212,7 @@ class SparsifySteerer:
         )
         self._validate_feature_indices()
         self._validate_feature_weights()
+        self._validate_feature_scales()
 
     def _validate_feature_indices(self) -> None:
         if not self.config.feature_indices:
@@ -231,6 +232,27 @@ class SparsifySteerer:
                 "steering.feature_weights must have the same length as steering.feature_indices "
                 f"({len(self.config.feature_weights)} != {len(self.config.feature_indices)})."
             )
+
+
+    def _validate_feature_scales(self) -> None:
+        if self.config.feature_scales is None:
+            return
+        if len(self.config.feature_scales) != len(self.config.feature_indices):
+            raise ValueError(
+                "steering.feature_scales must have the same length as steering.feature_indices "
+                f"({len(self.config.feature_scales)} != {len(self.config.feature_indices)})."
+            )
+        invalid = [value for value in self.config.feature_scales if float(value) <= 0]
+        if invalid:
+            raise ValueError(f"steering.feature_scales must be positive, got {invalid[:10]}")
+
+    def _feature_scale(self, feature_idx: int) -> float | None:
+        if self.config.feature_scales is None:
+            return None
+        for idx, value in zip(self.config.feature_indices, self.config.feature_scales):
+            if int(idx) == int(feature_idx):
+                return float(value)
+        raise KeyError(f"No feature scale configured for feature {feature_idx}.")
 
     def _feature_weight(self, feature_idx: int) -> float:
         if self.config.feature_weights is None:
@@ -312,6 +334,11 @@ class SparsifySteerer:
             raise
 
     def _feature_max_acts(self, hidden_2d: torch.Tensor) -> dict[int, float]:
+        if self.config.feature_scales is not None:
+            return {
+                int(feature_idx): float(self._feature_scale(int(feature_idx)))
+                for feature_idx in self.config.feature_indices
+            }
         if self.config.max_act is not None:
             shared = float(self.config.max_act)
             return {int(feature_idx): shared for feature_idx in self.config.feature_indices}
@@ -421,7 +448,10 @@ class SparsifySteerer:
         for feature_idx in self.config.feature_indices:
             feature_idx = int(feature_idx)
 
-            delta = float(self.config.strength) * self._feature_weight(feature_idx)
+            scale = self._feature_scale(feature_idx)
+            if scale is None:
+                scale = 1.0
+            delta = float(self.config.strength) * float(scale) * self._feature_weight(feature_idx)
             hit_mask = steered_top_indices == feature_idx
             if hit_mask.any():
                 steered_top_acts[hit_mask] += delta
