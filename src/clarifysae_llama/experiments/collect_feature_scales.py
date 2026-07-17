@@ -198,7 +198,14 @@ def collect_feature_scales(
             q90 = float(torch.quantile(values, 0.90).item())
             q95 = float(torch.quantile(values, 0.95).item())
             q99 = float(torch.quantile(values, 0.99).item())
-            status = 'ok' if selected_scale > 0 else 'invalid_scale'
+            if selected_scale <= 0:
+                status = 'invalid_scale'
+            elif values.numel() < 20:
+                status = 'very_sparse'
+            elif values.numel() < 200:
+                status = 'rare'
+            else:
+                status = 'ok'
         rows.append({
             'model_key': model_key,
             'layer': int(layer),

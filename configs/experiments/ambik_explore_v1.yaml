@@ -20,9 +20,10 @@ features:
 
 steering:
   scale:
-    method: positive_q95
-    artifact: artifacts/feature_scales/ambik_v1_feature_scales.csv
-  alpha: [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]
+    method: relative_residual_l2
+    artifact: artifacts/feature_scales/ambik_v1_relative_residual_l2.csv
+  # Preliminary residual-norm fractions. Validate on smoke20 before the full sweep.
+  alpha: [-0.1, -0.03, -0.01, 0.01, 0.03, 0.1]
 
 execution:
   include_baselines: true

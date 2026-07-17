@@ -191,3 +191,38 @@ The canonical example IDs are derived from content hashes rather than the
 unstable dataframe-index columns in the historical CSV exports. The loader also
 accepts `smoke20` and `pilot100` as split names in addition to `explore400` and
 `confirm600`.
+
+## Residual-relative steering scale
+
+AmbiK prompt activations are retained as diagnostics, but they are not used as
+the primary steering scale. Several shortlisted OutputScore features may never
+fire naturally on an AmbiK prompt, so a positive-activation quantile can be
+undefined or estimated from only a handful of observations.
+
+The primary scale is now `relative_residual_l2`. For feature decoder direction
+`d_j` at layer `l`, the collector computes
+
+```text
+scale_j = median_token_l2(h_l) / l2(d_j)
+```
+
+The effective residual-stream intervention is therefore approximately
+
+```text
+l2(delta_h) = abs(alpha) * median_token_l2(h_l)
+```
+
+so `alpha` is interpreted as a fraction of a typical residual-stream norm. This
+scale exists for every valid feature, does not depend on whether the feature
+fires naturally, and is comparable across features and model layers.
+
+Collect all nine model-layer scale groups with:
+
+```bash
+./scripts/collect_ambik_v1_residual_scales.sh
+```
+
+Before running the full explore400 manifest, validate the provisional alpha grid
+on `smoke20`. The existing positive-q95 collector remains available for domain
+activation diagnostics; it now labels fewer than 20 positive observations as
+`very_sparse` and fewer than 200 as `rare`.

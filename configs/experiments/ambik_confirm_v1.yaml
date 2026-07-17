@@ -19,8 +19,8 @@ features:
 
 steering:
   scale:
-    method: positive_q95
-    artifact: artifacts/feature_scales/ambik_v1_feature_scales.csv
+    method: relative_residual_l2
+    artifact: artifacts/feature_scales/ambik_v1_relative_residual_l2.csv
 
 execution:
   include_baselines: true

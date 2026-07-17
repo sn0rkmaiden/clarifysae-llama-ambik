@@ -109,13 +109,13 @@ class ExperimentPlanningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             catalog = pd.read_csv('manifests/feature_catalog.csv')
+            config = yaml.safe_load(Path('configs/experiments/ambik_explore_v1.yaml').read_text())
             scales = catalog[['model_key', 'layer', 'feature_id']].copy()
             scales['selected_scale'] = 1.0
-            scales['scale_method'] = 'positive_q95'
+            scales['scale_method'] = config['steering']['scale']['method']
             scale_path = root / 'scales.csv'
             scales.to_csv(scale_path, index=False)
 
-            config = yaml.safe_load(Path('configs/experiments/ambik_explore_v1.yaml').read_text())
             config['steering']['scale']['artifact'] = str(scale_path)
             config_path = root / 'experiment.yaml'
             config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -131,3 +131,16 @@ class ExperimentPlanningTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ResidualScaleTests(unittest.TestCase):
+    def test_relative_residual_scale(self):
+        from clarifysae_llama.experiments.scaling import compute_relative_residual_scale
+
+        self.assertAlmostEqual(
+            compute_relative_residual_scale(residual_l2=12.0, decoder_l2=3.0),
+            4.0,
+        )
+        with self.assertRaises(ValueError):
+            compute_relative_residual_scale(residual_l2=0.0, decoder_l2=3.0)
+        with self.assertRaises(ValueError):
+            compute_relative_residual_scale(residual_l2=12.0, decoder_l2=0.0)
