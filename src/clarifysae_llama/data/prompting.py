@@ -49,6 +49,20 @@ JSON_TEMPLATE = (
 )
 
 
+DIRECT_QUESTION_TEMPLATE = (
+    '{context}'
+    'Decide whether clarification is required before acting.\n'
+    'Ask exactly one short clarifying question only when a required fact or user choice is missing and different reasonable answers would lead to materially different actions or outcomes.\n'
+    'Otherwise, output exactly NONE.\n\n'
+    'Treat the task as clear when you can execute one safe, reasonable plan from the information given.\n'
+    'Do not ask merely because multiple methods could work, because nonessential stylistic preferences are unspecified, because details can be safely inferred from the context and ordinary practice, or because you want confirmation of information already provided.\n'
+    'Do ask when the user must choose among materially different valid outcomes.\n\n'
+    'Return exactly NONE or one question ending with a question mark.\n'
+    'Do not output JSON, labels, explanations, bullets, or additional text.\n\n'
+    'Answer:\n'
+)
+
+
 CLARIFICATION_TEMPLATE = JSON_TEMPLATE
 
 
@@ -72,3 +86,7 @@ def build_json_compliance_prompt(description: str, task: str, max_questions: int
 
 def build_clarification_prompt(description: str, task: str, max_questions: int = 3) -> str:
     return build_json_compliance_prompt(description=description, task=task, max_questions=max_questions)
+
+
+def build_direct_question_prompt(description: str, task: str) -> str:
+    return DIRECT_QUESTION_TEMPLATE.format(context=_base_context(description, task))

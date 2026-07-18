@@ -317,3 +317,72 @@ def extract_questions(raw_output: str, max_questions: int = 3) -> list[str]:
             break
 
     return deduped
+
+
+def assess_direct_question_output(raw_output: str) -> dict[str, Any]:
+    """Parse the direct AmbiK action protocol: exactly NONE or one question."""
+    body = _strip_fences_and_eos(raw_output)
+    stripped = body.strip()
+
+    exact_none = stripped == 'NONE'
+    exact_question = (
+        bool(stripped)
+        and '\n' not in stripped
+        and stripped.endswith('?')
+        and stripped.count('?') == 1
+        and not stripped.startswith(('{', '[', '-', '*'))
+        and re.match(r'(?i)^(?:answer|question)\s*:', stripped) is None
+    )
+
+    if exact_none:
+        return {
+            'output_exact_valid': True,
+            'output_schema_valid': True,
+            'output_recoverable_parse': False,
+            'predicted_ambiguous': False,
+            'question': [],
+        }
+    if exact_question:
+        return {
+            'output_exact_valid': True,
+            'output_schema_valid': True,
+            'output_recoverable_parse': False,
+            'predicted_ambiguous': True,
+            'question': [_clean_question_text(stripped)],
+        }
+
+    normalized = re.sub(r'\s+', ' ', stripped).strip()
+    none_like = bool(re.fullmatch(r'(?i)(?:answer\s*:\s*)?none[.!]?', normalized))
+    if none_like:
+        return {
+            'output_exact_valid': False,
+            'output_schema_valid': True,
+            'output_recoverable_parse': True,
+            'predicted_ambiguous': False,
+            'question': [],
+        }
+
+    questions = extract_questions(body, max_questions=1)
+    if questions:
+        cleaned_question = re.sub(
+            r'(?i)^(?:answer|question)\s*:\s*',
+            '',
+            questions[0],
+        ).strip()
+        questions = [cleaned_question] if cleaned_question else []
+    if questions:
+        return {
+            'output_exact_valid': False,
+            'output_schema_valid': True,
+            'output_recoverable_parse': True,
+            'predicted_ambiguous': True,
+            'question': questions[:1],
+        }
+
+    return {
+        'output_exact_valid': False,
+        'output_schema_valid': False,
+        'output_recoverable_parse': False,
+        'predicted_ambiguous': None,
+        'question': [],
+    }

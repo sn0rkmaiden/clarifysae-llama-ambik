@@ -1,0 +1,421 @@
+diff --git a/configs/metrics/ambik_direct_question.yaml b/configs/metrics/ambik_direct_question.yaml
+new file mode 100644
+index 0000000..a8c2c88
+--- /dev/null
++++ b/configs/metrics/ambik_direct_question.yaml
+@@ -0,0 +1,7 @@
++evaluation:
++  protocol: direct_question
++  max_questions: 1
++  embed_threshold: 0.75
++  nli_threshold: 0.75
++  enable_nli: false
++  brevity_max: 1
+diff --git a/src/clarifysae_llama/data/prompting.py b/src/clarifysae_llama/data/prompting.py
+index 137e04c..8f1ef62 100644
+--- a/src/clarifysae_llama/data/prompting.py
++++ b/src/clarifysae_llama/data/prompting.py
+@@ -49,6 +49,20 @@ JSON_TEMPLATE = (
+ )
+ 
+ 
++DIRECT_QUESTION_TEMPLATE = (
++    '{context}'
++    'Decide whether clarification is required before acting.\n'
++    'Ask exactly one short clarifying question only when a required fact or user choice is missing and different reasonable answers would lead to materially different actions or outcomes.\n'
++    'Otherwise, output exactly NONE.\n\n'
++    'Treat the task as clear when you can execute one safe, reasonable plan from the information given.\n'
++    'Do not ask merely because multiple methods could work, because nonessential stylistic preferences are unspecified, because details can be safely inferred from the context and ordinary practice, or because you want confirmation of information already provided.\n'
++    'Do ask when the user must choose among materially different valid outcomes.\n\n'
++    'Return exactly NONE or one question ending with a question mark.\n'
++    'Do not output JSON, labels, explanations, bullets, or additional text.\n\n'
++    'Answer:\n'
++)
++
++
+ CLARIFICATION_TEMPLATE = JSON_TEMPLATE
+ 
+ 
+@@ -72,3 +86,7 @@ def build_json_compliance_prompt(description: str, task: str, max_questions: int
+ 
+ def build_clarification_prompt(description: str, task: str, max_questions: int = 3) -> str:
+     return build_json_compliance_prompt(description=description, task=task, max_questions=max_questions)
++
++
++def build_direct_question_prompt(description: str, task: str) -> str:
++    return DIRECT_QUESTION_TEMPLATE.format(context=_base_context(description, task))
+diff --git a/src/clarifysae_llama/eval/metrics.py b/src/clarifysae_llama/eval/metrics.py
+index de5596c..be2a381 100644
+--- a/src/clarifysae_llama/eval/metrics.py
++++ b/src/clarifysae_llama/eval/metrics.py
+@@ -179,6 +179,27 @@ def aggregate_metrics(
+         float(sum(1 for row in gold_ambiguous_rows if _asked_question(row)) / len(gold_ambiguous_rows))
+         if gold_ambiguous_rows else None
+     )
++    resolved_proxy_first_rate_ambiguous = (
++        float(sum(1 for row in gold_ambiguous_rows if bool(row.get('resolved_proxy_first'))) / len(gold_ambiguous_rows))
++        if gold_ambiguous_rows else None
++    )
++    resolved_proxy_any_rate_ambiguous = (
++        float(sum(1 for row in gold_ambiguous_rows if bool(row.get('resolved_proxy_any', row.get('resolved_proxy')))) / len(gold_ambiguous_rows))
++        if gold_ambiguous_rows else None
++    )
++    asked_ambiguous_rows = [row for row in gold_ambiguous_rows if _asked_question(row)]
++    resolution_first_given_asked_ambiguous = (
++        float(sum(1 for row in asked_ambiguous_rows if bool(row.get('resolved_proxy_first'))) / len(asked_ambiguous_rows))
++        if asked_ambiguous_rows else None
++    )
++    avg_num_questions_ambiguous = (
++        float(sum(int(row['num_questions']) for row in gold_ambiguous_rows) / len(gold_ambiguous_rows))
++        if gold_ambiguous_rows else None
++    )
++    avg_num_questions_clear = (
++        float(sum(int(row['num_questions']) for row in gold_clear_rows) / len(gold_clear_rows))
++        if gold_clear_rows else None
++    )
+ 
+     necessity_tp = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and _asked_question(row))
+     necessity_fp = sum(1 for row in rows if row['ambiguity_type'] != PREFERENCE_CATEGORY and _asked_question(row))
+@@ -221,6 +242,11 @@ def aggregate_metrics(
+         'resolved_proxy_rate': resolved_proxy_any_rate,
+         'asking_rate_ambiguous': asking_rate_ambiguous,
+         'overasking_rate_clear': overasking_rate_clear,
++        'resolved_proxy_first_rate_ambiguous': resolved_proxy_first_rate_ambiguous,
++        'resolved_proxy_any_rate_ambiguous': resolved_proxy_any_rate_ambiguous,
++        'resolution_first_given_asked_ambiguous': resolution_first_given_asked_ambiguous,
++        'avg_num_questions_ambiguous': avg_num_questions_ambiguous,
++        'avg_num_questions_clear': avg_num_questions_clear,
+         'necessity_precision': necessity_precision,
+         'necessity_recall': necessity_recall,
+         'overall_weighted_score': overall_weighted_score,
+@@ -237,6 +263,19 @@ def aggregate_metrics(
+     if json_recoverable_parse_rate is not None:
+         overall['json_recoverable_parse_rate'] = json_recoverable_parse_rate
+ 
++    if 'output_exact_valid' in example_metrics.columns:
++        overall['output_exact_valid_rate'] = float(
++            sum(1 for row in rows if bool(row.get('output_exact_valid'))) / total_examples
++        )
++    if 'output_schema_valid' in example_metrics.columns:
++        overall['output_schema_valid_rate'] = float(
++            sum(1 for row in rows if bool(row.get('output_schema_valid'))) / total_examples
++        )
++    if 'output_recoverable_parse' in example_metrics.columns:
++        overall['output_recoverable_parse_rate'] = float(
++            sum(1 for row in rows if bool(row.get('output_recoverable_parse'))) / total_examples
++        )
++
+     if enable_nli:
+         overall_first_similarity_nli = _mean_or_none([
+             float(row['model_question_first_nli_similarity'])
+@@ -296,6 +335,12 @@ def aggregate_metrics(
+             category_row['json_schema_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_schema_valid'))) / len(cat_rows))
+         if 'json_recoverable_parse' in example_metrics.columns:
+             category_row['json_recoverable_parse_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_recoverable_parse'))) / len(cat_rows))
++        if 'output_exact_valid' in example_metrics.columns:
++            category_row['output_exact_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_exact_valid'))) / len(cat_rows))
++        if 'output_schema_valid' in example_metrics.columns:
++            category_row['output_schema_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_schema_valid'))) / len(cat_rows))
++        if 'output_recoverable_parse' in example_metrics.columns:
++            category_row['output_recoverable_parse_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_recoverable_parse'))) / len(cat_rows))
+ 
+         if enable_nli:
+             category_row['mean_first_similarity_nli_over_asked'] = _mean_or_none([
+diff --git a/src/clarifysae_llama/runners/run_eval.py b/src/clarifysae_llama/runners/run_eval.py
+index f51c013..288fcf1 100644
+--- a/src/clarifysae_llama/runners/run_eval.py
++++ b/src/clarifysae_llama/runners/run_eval.py
+@@ -20,7 +20,7 @@ from clarifysae_llama.backends.hf_backend import HFCausalBackend
+ from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
+ from clarifysae_llama.config import load_yaml
+ from clarifysae_llama.data.ambik_loader import load_ambik_clarification_dataset
+-from clarifysae_llama.data.prompting import build_clarification_prompt
++from clarifysae_llama.data.prompting import build_clarification_prompt, build_direct_question_prompt
+ from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics, normalize_questions
+ from clarifysae_llama.eval.reporting import save_metric_tables
+ from clarifysae_llama.eval.text_matching import initialize_metric_backends
+@@ -28,7 +28,7 @@ from clarifysae_llama.experiments.fingerprint import fingerprint_payload
+ from clarifysae_llama.experiments.provenance import write_run_provenance
+ from clarifysae_llama.utils.io import append_jsonl, ensure_dir, write_json, write_jsonl
+ from clarifysae_llama.utils.logging import log_run
+-from clarifysae_llama.utils.parsing import assess_json_output, parse_model_json
++from clarifysae_llama.utils.parsing import assess_direct_question_output, assess_json_output, parse_model_json
+ from clarifysae_llama.utils.seed import set_seed
+ 
+ 
+@@ -54,10 +54,11 @@ def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
+ def _evaluation_settings(config: dict[str, Any]) -> dict[str, Any]:
+     eval_cfg = config.get('evaluation', {})
+     protocol = str(eval_cfg.get('protocol', 'combined_json'))
+-    if protocol != 'combined_json':
++    supported_protocols = {'combined_json', 'direct_question'}
++    if protocol not in supported_protocols:
+         raise ValueError(
+-            f"Unsupported AmbiK evaluation.protocol={protocol!r}. The previous 'separated' "
+-            "label was not implemented. Use combined_json unless a real multi-stage runner is added."
++            f"Unsupported AmbiK evaluation.protocol={protocol!r}. "
++            f"Supported protocols: {sorted(supported_protocols)}."
+         )
+     return {
+         'protocol': protocol,
+@@ -98,10 +99,14 @@ def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[
+             'gold_question': str(row.get('question', '') or ''),
+             'gold_answer': str(row.get('answer', '') or ''),
+             'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
+-            'prompt': build_clarification_prompt(
+-                description=description,
+-                task=task,
+-                max_questions=max_questions,
++            'prompt': (
++                build_direct_question_prompt(description=description, task=task)
++                if eval_settings['protocol'] == 'direct_question'
++                else build_clarification_prompt(
++                    description=description,
++                    task=task,
++                    max_questions=max_questions,
++                )
+             ),
+         }
+         rows.append(prompt_row)
+@@ -232,7 +237,8 @@ def _compact_prediction_row(row: dict[str, Any], *, enable_nli: bool) -> dict[st
+         'asked_question', 'model_question_first_similarity',
+         'model_question_best_similarity', 'resolved_proxy_first',
+         'resolved_proxy_any', 'json_parsed_output', 'json_exact_valid',
+-        'json_schema_valid', 'json_recoverable_parse',
++        'json_schema_valid', 'json_recoverable_parse', 'output_exact_valid',
++        'output_schema_valid', 'output_recoverable_parse',
+     ]
+     if enable_nli:
+         keep.extend([
+@@ -250,7 +256,8 @@ def _select_example_metric_columns(raw_df: pd.DataFrame, *, enable_nli: bool) ->
+         'num_questions', 'asked_question', 'model_question_first_similarity',
+         'model_question_best_similarity', 'resolved_proxy_first',
+         'resolved_proxy_any', 'json_exact_valid', 'json_schema_valid',
+-        'json_recoverable_parse',
++        'json_recoverable_parse', 'output_exact_valid',
++        'output_schema_valid', 'output_recoverable_parse',
+     ]
+     if enable_nli:
+         columns.extend([
+@@ -277,21 +284,37 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings:
+         }
+ 
+         raw_output = row.get('raw_model_output', '')
+-        parsed = parse_model_json(raw_output)
+-        parsed = parsed if isinstance(parsed, dict) else None
+-        predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
+-        model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
+-        json_metrics = assess_json_output(raw_output)
+-
+-        prediction_row.update({
+-            'prompt': row['prompt'],
+-            'raw_model_output': raw_output,
+-            'parsed_output': parsed,
+-            'json_parsed_output': json_metrics['json_parsed_output'],
+-            'json_exact_valid': json_metrics['json_exact_valid'],
+-            'json_schema_valid': json_metrics['json_schema_valid'],
+-            'json_recoverable_parse': json_metrics['json_recoverable_parse'],
+-        })
++        if eval_settings['protocol'] == 'direct_question':
++            direct_metrics = assess_direct_question_output(raw_output)
++            parsed = {
++                'ambiguous': direct_metrics['predicted_ambiguous'],
++                'question': direct_metrics['question'],
++            } if direct_metrics['output_schema_valid'] else None
++            predicted_ambiguous = direct_metrics['predicted_ambiguous']
++            model_questions = normalize_questions(direct_metrics['question'])
++            prediction_row.update({
++                'prompt': row['prompt'],
++                'raw_model_output': raw_output,
++                'parsed_output': parsed,
++                'output_exact_valid': direct_metrics['output_exact_valid'],
++                'output_schema_valid': direct_metrics['output_schema_valid'],
++                'output_recoverable_parse': direct_metrics['output_recoverable_parse'],
++            })
++        else:
++            parsed = parse_model_json(raw_output)
++            parsed = parsed if isinstance(parsed, dict) else None
++            predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
++            model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
++            json_metrics = assess_json_output(raw_output)
++            prediction_row.update({
++                'prompt': row['prompt'],
++                'raw_model_output': raw_output,
++                'parsed_output': parsed,
++                'json_parsed_output': json_metrics['json_parsed_output'],
++                'json_exact_valid': json_metrics['json_exact_valid'],
++                'json_schema_valid': json_metrics['json_schema_valid'],
++                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
++            })
+         prediction_row.update(compute_example_metrics(
+             ambiguity_type=row['ambiguity_type'],
+             gold_question=row['gold_question'],
+diff --git a/src/clarifysae_llama/utils/parsing.py b/src/clarifysae_llama/utils/parsing.py
+index 1a2796f..8a8d5ad 100644
+--- a/src/clarifysae_llama/utils/parsing.py
++++ b/src/clarifysae_llama/utils/parsing.py
+@@ -317,3 +317,72 @@ def extract_questions(raw_output: str, max_questions: int = 3) -> list[str]:
+             break
+ 
+     return deduped
++
++
++def assess_direct_question_output(raw_output: str) -> dict[str, Any]:
++    """Parse the direct AmbiK action protocol: exactly NONE or one question."""
++    body = _strip_fences_and_eos(raw_output)
++    stripped = body.strip()
++
++    exact_none = stripped == 'NONE'
++    exact_question = (
++        bool(stripped)
++        and '\n' not in stripped
++        and stripped.endswith('?')
++        and stripped.count('?') == 1
++        and not stripped.startswith(('{', '[', '-', '*'))
++        and re.match(r'(?i)^(?:answer|question)\s*:', stripped) is None
++    )
++
++    if exact_none:
++        return {
++            'output_exact_valid': True,
++            'output_schema_valid': True,
++            'output_recoverable_parse': False,
++            'predicted_ambiguous': False,
++            'question': [],
++        }
++    if exact_question:
++        return {
++            'output_exact_valid': True,
++            'output_schema_valid': True,
++            'output_recoverable_parse': False,
++            'predicted_ambiguous': True,
++            'question': [_clean_question_text(stripped)],
++        }
++
++    normalized = re.sub(r'\s+', ' ', stripped).strip()
++    none_like = bool(re.fullmatch(r'(?i)(?:answer\s*:\s*)?none[.!]?', normalized))
++    if none_like:
++        return {
++            'output_exact_valid': False,
++            'output_schema_valid': True,
++            'output_recoverable_parse': True,
++            'predicted_ambiguous': False,
++            'question': [],
++        }
++
++    questions = extract_questions(body, max_questions=1)
++    if questions:
++        cleaned_question = re.sub(
++            r'(?i)^(?:answer|question)\s*:\s*',
++            '',
++            questions[0],
++        ).strip()
++        questions = [cleaned_question] if cleaned_question else []
++    if questions:
++        return {
++            'output_exact_valid': False,
++            'output_schema_valid': True,
++            'output_recoverable_parse': True,
++            'predicted_ambiguous': True,
++            'question': questions[:1],
++        }
++
++    return {
++        'output_exact_valid': False,
++        'output_schema_valid': False,
++        'output_recoverable_parse': False,
++        'predicted_ambiguous': None,
++        'question': [],
++    }
+diff --git a/tests/test_direct_question_protocol.py b/tests/test_direct_question_protocol.py
+new file mode 100644
+index 0000000..4c71bbe
+--- /dev/null
++++ b/tests/test_direct_question_protocol.py
+@@ -0,0 +1,86 @@
++import unittest
++
++import pandas as pd
++
++from clarifysae_llama.data.prompting import build_direct_question_prompt
++from clarifysae_llama.eval.metrics import aggregate_metrics
++from clarifysae_llama.utils.parsing import assess_direct_question_output
++
++
++class DirectQuestionProtocolTests(unittest.TestCase):
++    def test_direct_prompt_contains_operational_clear_rule(self):
++        prompt = build_direct_question_prompt(
++            'a red mug and a blue mug',
++            'put the red mug in the top drawer',
++        )
++        self.assertIn('output exactly NONE', prompt)
++        self.assertIn('multiple methods could work', prompt)
++        self.assertIn('materially different valid outcomes', prompt)
++        self.assertIn('one question ending with a question mark', prompt)
++
++    def test_direct_question_parser_exact_and_recoverable(self):
++        none = assess_direct_question_output('NONE')
++        self.assertTrue(none['output_exact_valid'])
++        self.assertFalse(none['predicted_ambiguous'])
++        self.assertEqual(none['question'], [])
++
++        question = assess_direct_question_output('Which drawer should I use?')
++        self.assertTrue(question['output_exact_valid'])
++        self.assertTrue(question['predicted_ambiguous'])
++        self.assertEqual(question['question'], ['Which drawer should I use?'])
++
++        recovered = assess_direct_question_output('Answer: Which drawer should I use?')
++        self.assertFalse(recovered['output_exact_valid'])
++        self.assertTrue(recovered['output_schema_valid'])
++        self.assertTrue(recovered['output_recoverable_parse'])
++        self.assertEqual(recovered['question'], ['Which drawer should I use?'])
++
++        invalid = assess_direct_question_output('The task is clear.')
++        self.assertFalse(invalid['output_schema_valid'])
++        self.assertIsNone(invalid['predicted_ambiguous'])
++
++    def test_aggregate_reports_ambiguous_only_resolution(self):
++        rows = pd.DataFrame([
++            {
++                'id': 'a1', 'source_id': '1', 'variant': 'ambiguous',
++                'ambiguity_type': 'preferences', 'gold_ambiguous': True,
++                'predicted_ambiguous': True, 'ambiguity_decision_correct': True,
++                'model_questions': ['Which drawer?'], 'num_questions': 1,
++                'asked_question': True, 'model_question_first_similarity': 0.9,
++                'model_question_best_similarity': 0.9, 'resolved_proxy_first': True,
++                'resolved_proxy_any': True, 'output_exact_valid': True,
++                'output_schema_valid': True, 'output_recoverable_parse': False,
++            },
++            {
++                'id': 'a2', 'source_id': '2', 'variant': 'ambiguous',
++                'ambiguity_type': 'safety', 'gold_ambiguous': True,
++                'predicted_ambiguous': False, 'ambiguity_decision_correct': False,
++                'model_questions': [], 'num_questions': 0, 'asked_question': False,
++                'model_question_first_similarity': 0.0,
++                'model_question_best_similarity': 0.0, 'resolved_proxy_first': False,
++                'resolved_proxy_any': False, 'output_exact_valid': True,
++                'output_schema_valid': True, 'output_recoverable_parse': False,
++            },
++            {
++                'id': 'c1', 'source_id': '1', 'variant': 'clear',
++                'ambiguity_type': 'unambiguous_direct', 'gold_ambiguous': False,
++                'predicted_ambiguous': False, 'ambiguity_decision_correct': True,
++                'model_questions': [], 'num_questions': 0, 'asked_question': False,
++                'model_question_first_similarity': 0.0,
++                'model_question_best_similarity': 0.0, 'resolved_proxy_first': False,
++                'resolved_proxy_any': False, 'output_exact_valid': True,
++                'output_schema_valid': True, 'output_recoverable_parse': False,
++            },
++        ])
++        overall, _ = aggregate_metrics(rows)
++        result = overall.iloc[0]
++        self.assertEqual(result['resolved_proxy_first_rate'], 1 / 3)
++        self.assertEqual(result['resolved_proxy_first_rate_ambiguous'], 0.5)
++        self.assertEqual(result['resolution_first_given_asked_ambiguous'], 1.0)
++        self.assertEqual(result['asking_rate_ambiguous'], 0.5)
++        self.assertEqual(result['overasking_rate_clear'], 0.0)
++
++
++
++if __name__ == '__main__':
++    unittest.main()

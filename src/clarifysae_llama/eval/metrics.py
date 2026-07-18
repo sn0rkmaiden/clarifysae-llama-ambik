@@ -179,6 +179,27 @@ def aggregate_metrics(
         float(sum(1 for row in gold_ambiguous_rows if _asked_question(row)) / len(gold_ambiguous_rows))
         if gold_ambiguous_rows else None
     )
+    resolved_proxy_first_rate_ambiguous = (
+        float(sum(1 for row in gold_ambiguous_rows if bool(row.get('resolved_proxy_first'))) / len(gold_ambiguous_rows))
+        if gold_ambiguous_rows else None
+    )
+    resolved_proxy_any_rate_ambiguous = (
+        float(sum(1 for row in gold_ambiguous_rows if bool(row.get('resolved_proxy_any', row.get('resolved_proxy')))) / len(gold_ambiguous_rows))
+        if gold_ambiguous_rows else None
+    )
+    asked_ambiguous_rows = [row for row in gold_ambiguous_rows if _asked_question(row)]
+    resolution_first_given_asked_ambiguous = (
+        float(sum(1 for row in asked_ambiguous_rows if bool(row.get('resolved_proxy_first'))) / len(asked_ambiguous_rows))
+        if asked_ambiguous_rows else None
+    )
+    avg_num_questions_ambiguous = (
+        float(sum(int(row['num_questions']) for row in gold_ambiguous_rows) / len(gold_ambiguous_rows))
+        if gold_ambiguous_rows else None
+    )
+    avg_num_questions_clear = (
+        float(sum(int(row['num_questions']) for row in gold_clear_rows) / len(gold_clear_rows))
+        if gold_clear_rows else None
+    )
 
     necessity_tp = sum(1 for row in rows if row['ambiguity_type'] == PREFERENCE_CATEGORY and _asked_question(row))
     necessity_fp = sum(1 for row in rows if row['ambiguity_type'] != PREFERENCE_CATEGORY and _asked_question(row))
@@ -221,6 +242,11 @@ def aggregate_metrics(
         'resolved_proxy_rate': resolved_proxy_any_rate,
         'asking_rate_ambiguous': asking_rate_ambiguous,
         'overasking_rate_clear': overasking_rate_clear,
+        'resolved_proxy_first_rate_ambiguous': resolved_proxy_first_rate_ambiguous,
+        'resolved_proxy_any_rate_ambiguous': resolved_proxy_any_rate_ambiguous,
+        'resolution_first_given_asked_ambiguous': resolution_first_given_asked_ambiguous,
+        'avg_num_questions_ambiguous': avg_num_questions_ambiguous,
+        'avg_num_questions_clear': avg_num_questions_clear,
         'necessity_precision': necessity_precision,
         'necessity_recall': necessity_recall,
         'overall_weighted_score': overall_weighted_score,
@@ -236,6 +262,19 @@ def aggregate_metrics(
         overall['json_schema_valid_rate'] = json_schema_valid_rate
     if json_recoverable_parse_rate is not None:
         overall['json_recoverable_parse_rate'] = json_recoverable_parse_rate
+
+    if 'output_exact_valid' in example_metrics.columns:
+        overall['output_exact_valid_rate'] = float(
+            sum(1 for row in rows if bool(row.get('output_exact_valid'))) / total_examples
+        )
+    if 'output_schema_valid' in example_metrics.columns:
+        overall['output_schema_valid_rate'] = float(
+            sum(1 for row in rows if bool(row.get('output_schema_valid'))) / total_examples
+        )
+    if 'output_recoverable_parse' in example_metrics.columns:
+        overall['output_recoverable_parse_rate'] = float(
+            sum(1 for row in rows if bool(row.get('output_recoverable_parse'))) / total_examples
+        )
 
     if enable_nli:
         overall_first_similarity_nli = _mean_or_none([
@@ -296,6 +335,12 @@ def aggregate_metrics(
             category_row['json_schema_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_schema_valid'))) / len(cat_rows))
         if 'json_recoverable_parse' in example_metrics.columns:
             category_row['json_recoverable_parse_rate'] = float(sum(1 for row in cat_rows if bool(row.get('json_recoverable_parse'))) / len(cat_rows))
+        if 'output_exact_valid' in example_metrics.columns:
+            category_row['output_exact_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_exact_valid'))) / len(cat_rows))
+        if 'output_schema_valid' in example_metrics.columns:
+            category_row['output_schema_valid_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_schema_valid'))) / len(cat_rows))
+        if 'output_recoverable_parse' in example_metrics.columns:
+            category_row['output_recoverable_parse_rate'] = float(sum(1 for row in cat_rows if bool(row.get('output_recoverable_parse'))) / len(cat_rows))
 
         if enable_nli:
             category_row['mean_first_similarity_nli_over_asked'] = _mean_or_none([

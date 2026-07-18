@@ -1,0 +1,7 @@
+evaluation:
+  protocol: direct_question
+  max_questions: 1
+  embed_threshold: 0.75
+  nli_threshold: 0.75
+  enable_nli: false
+  brevity_max: 1

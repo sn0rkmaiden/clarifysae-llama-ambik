@@ -20,7 +20,7 @@ from clarifysae_llama.backends.hf_backend import HFCausalBackend
 from clarifysae_llama.backends.steered_hf_backend import SteeredHFCausalBackend
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.data.ambik_loader import load_ambik_clarification_dataset
-from clarifysae_llama.data.prompting import build_clarification_prompt
+from clarifysae_llama.data.prompting import build_clarification_prompt, build_direct_question_prompt
 from clarifysae_llama.eval.metrics import aggregate_metrics, compute_example_metrics, normalize_questions
 from clarifysae_llama.eval.reporting import save_metric_tables
 from clarifysae_llama.eval.text_matching import initialize_metric_backends
@@ -28,7 +28,7 @@ from clarifysae_llama.experiments.fingerprint import fingerprint_payload
 from clarifysae_llama.experiments.provenance import write_run_provenance
 from clarifysae_llama.utils.io import append_jsonl, ensure_dir, write_json, write_jsonl
 from clarifysae_llama.utils.logging import log_run
-from clarifysae_llama.utils.parsing import assess_json_output, parse_model_json
+from clarifysae_llama.utils.parsing import assess_direct_question_output, assess_json_output, parse_model_json
 from clarifysae_llama.utils.seed import set_seed
 
 
@@ -54,10 +54,11 @@ def _configure_console(config: dict[str, Any]) -> dict[str, Any]:
 def _evaluation_settings(config: dict[str, Any]) -> dict[str, Any]:
     eval_cfg = config.get('evaluation', {})
     protocol = str(eval_cfg.get('protocol', 'combined_json'))
-    if protocol != 'combined_json':
+    supported_protocols = {'combined_json', 'direct_question'}
+    if protocol not in supported_protocols:
         raise ValueError(
-            f"Unsupported AmbiK evaluation.protocol={protocol!r}. The previous 'separated' "
-            "label was not implemented. Use combined_json unless a real multi-stage runner is added."
+            f"Unsupported AmbiK evaluation.protocol={protocol!r}. "
+            f"Supported protocols: {sorted(supported_protocols)}."
         )
     return {
         'protocol': protocol,
@@ -98,10 +99,14 @@ def build_prompts(dataset: pd.DataFrame, eval_settings: dict[str, Any]) -> list[
             'gold_question': str(row.get('question', '') or ''),
             'gold_answer': str(row.get('answer', '') or ''),
             'gold_plan_for_clear': str(row.get('plan_for_clear_task', '') or ''),
-            'prompt': build_clarification_prompt(
-                description=description,
-                task=task,
-                max_questions=max_questions,
+            'prompt': (
+                build_direct_question_prompt(description=description, task=task)
+                if eval_settings['protocol'] == 'direct_question'
+                else build_clarification_prompt(
+                    description=description,
+                    task=task,
+                    max_questions=max_questions,
+                )
             ),
         }
         rows.append(prompt_row)
@@ -232,7 +237,8 @@ def _compact_prediction_row(row: dict[str, Any], *, enable_nli: bool) -> dict[st
         'asked_question', 'model_question_first_similarity',
         'model_question_best_similarity', 'resolved_proxy_first',
         'resolved_proxy_any', 'json_parsed_output', 'json_exact_valid',
-        'json_schema_valid', 'json_recoverable_parse',
+        'json_schema_valid', 'json_recoverable_parse', 'output_exact_valid',
+        'output_schema_valid', 'output_recoverable_parse',
     ]
     if enable_nli:
         keep.extend([
@@ -250,7 +256,8 @@ def _select_example_metric_columns(raw_df: pd.DataFrame, *, enable_nli: bool) ->
         'num_questions', 'asked_question', 'model_question_first_similarity',
         'model_question_best_similarity', 'resolved_proxy_first',
         'resolved_proxy_any', 'json_exact_valid', 'json_schema_valid',
-        'json_recoverable_parse',
+        'json_recoverable_parse', 'output_exact_valid',
+        'output_schema_valid', 'output_recoverable_parse',
     ]
     if enable_nli:
         columns.extend([
@@ -277,21 +284,37 @@ def _finalize_prediction_rows(prompt_rows: list[dict[str, Any]], eval_settings: 
         }
 
         raw_output = row.get('raw_model_output', '')
-        parsed = parse_model_json(raw_output)
-        parsed = parsed if isinstance(parsed, dict) else None
-        predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
-        model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
-        json_metrics = assess_json_output(raw_output)
-
-        prediction_row.update({
-            'prompt': row['prompt'],
-            'raw_model_output': raw_output,
-            'parsed_output': parsed,
-            'json_parsed_output': json_metrics['json_parsed_output'],
-            'json_exact_valid': json_metrics['json_exact_valid'],
-            'json_schema_valid': json_metrics['json_schema_valid'],
-            'json_recoverable_parse': json_metrics['json_recoverable_parse'],
-        })
+        if eval_settings['protocol'] == 'direct_question':
+            direct_metrics = assess_direct_question_output(raw_output)
+            parsed = {
+                'ambiguous': direct_metrics['predicted_ambiguous'],
+                'question': direct_metrics['question'],
+            } if direct_metrics['output_schema_valid'] else None
+            predicted_ambiguous = direct_metrics['predicted_ambiguous']
+            model_questions = normalize_questions(direct_metrics['question'])
+            prediction_row.update({
+                'prompt': row['prompt'],
+                'raw_model_output': raw_output,
+                'parsed_output': parsed,
+                'output_exact_valid': direct_metrics['output_exact_valid'],
+                'output_schema_valid': direct_metrics['output_schema_valid'],
+                'output_recoverable_parse': direct_metrics['output_recoverable_parse'],
+            })
+        else:
+            parsed = parse_model_json(raw_output)
+            parsed = parsed if isinstance(parsed, dict) else None
+            predicted_ambiguous = _coerce_predicted_ambiguous(parsed.get('ambiguous')) if parsed else None
+            model_questions = normalize_questions(parsed.get('question', parsed.get('questions', []))) if parsed else []
+            json_metrics = assess_json_output(raw_output)
+            prediction_row.update({
+                'prompt': row['prompt'],
+                'raw_model_output': raw_output,
+                'parsed_output': parsed,
+                'json_parsed_output': json_metrics['json_parsed_output'],
+                'json_exact_valid': json_metrics['json_exact_valid'],
+                'json_schema_valid': json_metrics['json_schema_valid'],
+                'json_recoverable_parse': json_metrics['json_recoverable_parse'],
+            })
         prediction_row.update(compute_example_metrics(
             ambiguity_type=row['ambiguity_type'],
             gold_question=row['gold_question'],
