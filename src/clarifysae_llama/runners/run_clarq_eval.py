@@ -20,13 +20,25 @@ from clarifysae_llama.clarq_legacy.backend_adapter import BackendLLMAdapter
 from clarifysae_llama.clarq_legacy.multi_info_provider_agent import helpers_m as MultiInfoProvider
 from clarifysae_llama.clarq_legacy.provider_agent import helpers as GeneralProvider
 from clarifysae_llama.clarq_legacy.seeker_agent import player as SeekerPlayer
-from clarifysae_llama.clarq_legacy.utils import data_combination, read_path
+from clarifysae_llama.clarq_legacy.utils import (
+    clarq_task_name,
+    data_combination,
+    read_path,
+)
 from clarifysae_llama.config import load_yaml
 from clarifysae_llama.eval.clarq_html_report import build_clarq_html_report
 from clarifysae_llama.eval.clarq_metrics import (
     compute_metrics_for_payload,
     metrics_to_dataframes,
     parse_evaluation_set,
+    task_type_summary_dataframes,
+)
+from clarifysae_llama.experiments.provenance import write_run_provenance
+from clarifysae_llama.runners.clarq_run_state import (
+    append_dialogue_checkpoint,
+    assert_run_config_compatible,
+    checkpoint_path_for_run,
+    load_dialogue_checkpoints,
 )
 from clarifysae_llama.utils.io import ensure_dir, write_csv, write_json
 from clarifysae_llama.utils.logging import log_run
@@ -213,9 +225,22 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
 
     experiment_name = config['experiment_name']
     root_dir = Path(config['output']['root_dir'])
-    run_dir = ensure_dir(root_dir / experiment_name)
+    run_dir = root_dir / experiment_name
+    assert_run_config_compatible(run_dir, config)
+    run_dir = ensure_dir(run_dir)
+    fingerprint_path = run_dir / 'run_fingerprint.json'
+    if not fingerprint_path.exists():
+        write_run_provenance(
+            run_dir,
+            config,
+            repo_root=Path.cwd(),
+            command=list(os.sys.argv),
+            extra_files=[clarq_cfg['dataset_path']],
+        )
     ensure_dir(root_dir / 'logs')
     artifact_basename = _build_artifact_basename(config, clarq_cfg)
+    checkpoint_path = checkpoint_path_for_run(run_dir)
+    dialogue_checkpoints = load_dialogue_checkpoints(checkpoint_path)
 
     raw_data = read_path(clarq_cfg['dataset_path'])
     if not raw_data:
@@ -242,6 +267,7 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
     print(f"dataset: {clarq_cfg['dataset_path']}")
     print(f"eval task types: {len(eval_indices)} / {len(all_conv)}")
     print(f"eval dialogues: {total_dialogues}")
+    print(f"resumable dialogues already saved: {len(dialogue_checkpoints)}")
     print(f"max_turns_cap: {max_turns_cap}")
 
     seeker_backend = provider_backend = judge_backend = None
@@ -269,7 +295,14 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             if i not in eval_indices:
                 continue
 
-            for conv in one_type:
+            for dialogue_index, conv in enumerate(one_type):
+                checkpoint_key = (i, dialogue_index)
+                if checkpoint_key in dialogue_checkpoints:
+                    conv['l2l'][0] = dialogue_checkpoints[checkpoint_key]['conversation']
+                    if dialog_pbar is not None:
+                        dialog_pbar.update(1)
+                    continue
+
                 gold_r = conv['all_response'].strip().split('\n')
                 provider = provider_cls(
                     gold_r,
@@ -290,6 +323,13 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
                     if provider.is_conv_end(l2l_conv) or len(l2l_conv) > max_turns_cap:
                         break
                 conv['l2l'][0] = l2l_conv
+                append_dialogue_checkpoint(
+                    checkpoint_path,
+                    task_type_index=i,
+                    task_type_name=clarq_task_name(i),
+                    dialogue_index=dialogue_index,
+                    conversation=l2l_conv,
+                )
 
                 if dialog_pbar is not None:
                     dialog_pbar.update(1)
@@ -306,6 +346,8 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
 
         metrics_path = None
         summary_path = None
+        task_summary_path = None
+        macro_summary_path = None
         report_path = None
 
         if config.get('judge_model'):
@@ -344,10 +386,22 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             judge_llm = BackendLLMAdapter(judge_backend)
             metrics = compute_metrics_for_payload(payload, judge_llm, eval_indices)
             metrics_df, summary_df = metrics_to_dataframes(metrics)
+            task_summary_df, macro_summary_df = task_type_summary_dataframes(
+                metrics_df,
+                exclude_from_macro=clarq_cfg.get('exclude_task_types_from_macro', []),
+            )
             metrics_path = run_dir / 'tables' / f'{artifact_basename}__clarq_metrics.csv'
             summary_path = run_dir / 'tables' / f'{artifact_basename}__clarq_summary.csv'
+            task_summary_path = (
+                run_dir / 'tables' / f'{artifact_basename}__clarq_task_summary.csv'
+            )
+            macro_summary_path = (
+                run_dir / 'tables' / f'{artifact_basename}__clarq_macro_summary.csv'
+            )
             write_csv(metrics_path, metrics_df)
             write_csv(summary_path, summary_df)
+            write_csv(task_summary_path, task_summary_df)
+            write_csv(macro_summary_path, macro_summary_df)
 
             if provider_can_judge:
                 # Avoid double-cleaning the same backend object in the finally block.
@@ -369,6 +423,10 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             print(f"  metrics: {metrics_path}")
         if summary_path:
             print(f"  summary: {summary_path}")
+        if task_summary_path:
+            print(f"  task summary: {task_summary_path}")
+        if macro_summary_path:
+            print(f"  macro summary: {macro_summary_path}")
         if report_path:
             print(f"  report: {report_path}")
 
@@ -383,6 +441,8 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'results_path': str(results_path),
             'metrics_path': str(metrics_path) if metrics_path else None,
             'summary_path': str(summary_path) if summary_path else None,
+            'task_summary_path': str(task_summary_path) if task_summary_path else None,
+            'macro_summary_path': str(macro_summary_path) if macro_summary_path else None,
             'report_path': str(report_path) if report_path else None,
             'elapsed_sec': elapsed_sec,
         }
@@ -393,6 +453,8 @@ def run_clarq_eval(config: dict[str, Any]) -> dict[str, Any]:
             'results_path': str(results_path),
             'metrics_path': str(metrics_path) if metrics_path else None,
             'summary_path': str(summary_path) if summary_path else None,
+            'task_summary_path': str(task_summary_path) if task_summary_path else None,
+            'macro_summary_path': str(macro_summary_path) if macro_summary_path else None,
             'report_path': str(report_path) if report_path else None,
             'elapsed_sec': elapsed_sec,
         }

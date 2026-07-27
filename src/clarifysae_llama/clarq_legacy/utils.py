@@ -6,6 +6,24 @@ import re
 from typing import Any
 
 
+CLARQ_TASK_TYPES = [
+    '1. Gather Resources', '2. Escort Mission', '3. Stealth Mission', '4. Survival Challenge',
+    '5. Construction Task', '6. Defense Mission', '7. Competition', '8. Weapon Manufacturing',
+    '9. Hunting Expedition', '10. Rescue Mission', '11. Arena Battle', '12. Scientific Experiment',
+    '13. Photography Mission', '14. Trade Task', '15. Exploration Journey', '16. Electrical Engineering',
+    '17. Automobile Manufacturing', '18. Painting Task', '19. Repair Mission', '20. Training Session',
+    '21. Digging Mission', '22. Electronic Engineering', '23. Planting Task', '24. Alliance Building',
+    '25. Cooking Delicacies', '26. Video Production', '27. Animal Care', '28. Archaeological Excavation',
+    '29. Escape Mission', '30. Planning Tourism', '31. Magic Task',
+]
+
+
+def clarq_task_name(task_type_index: int) -> str:
+    if task_type_index < 0 or task_type_index >= len(CLARQ_TASK_TYPES):
+        raise IndexError(f'ClarQ task type index out of range: {task_type_index}')
+    return CLARQ_TASK_TYPES[task_type_index]
+
+
 def detect_language(text: str) -> str:
     chinese_characters = re.findall(r'[一-龥]', text)
     english_char_count = sum(1 for char in text if char.isalpha() and char.isascii())
@@ -18,20 +36,10 @@ def detect_language(text: str) -> str:
 
 
 def read_path(name: str):
-    types = [
-        '1. Gather Resources', '2. Escort Mission', '3. Stealth Mission', '4. Survival Challenge',
-        '5. Construction Task', '6. Defense Mission', '7. Competition', '8. Weapon Manufacturing',
-        '9. Hunting Expedition', '10. Rescue Mission', '11. Arena Battle', '12. Scientific Experiment',
-        '13. Photography Mission', '14. Trade Task', '15. Exploration Journey', '16. Electrical Engineering',
-        '17. Automobile Manufacturing', '18. Painting Task', '19. Repair Mission', '20. Training Session',
-        '21. Digging Mission', '22. Electronic Engineering', '23. Planting Task', '24. Alliance Building',
-        '25. Cooking Delicacies', '26. Video Production', '27. Animal Care', '28. Archaeological Excavation',
-        '29. Escape Mission', '30. Planning Tourism', '31. Magic Task',
-    ]
     all_data = []
     if not os.path.exists(name):
         return all_data
-    for t in types:
+    for t in CLARQ_TASK_TYPES:
         json_path = os.path.join(name, t.replace(' ', '_') + '.json')
         with open(json_path, 'r', encoding='utf-8') as f:
             all_data.append(json.load(f))

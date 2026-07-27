@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from clarifysae_llama.clarq_legacy.utils import detect_language
+from clarifysae_llama.clarq_legacy.utils import clarq_task_name, detect_language
 
 
 def add_punctuation(sentence: str, chinese: bool = False) -> str:
@@ -220,6 +220,7 @@ def _compute_dialogue_row(
 
         # dialogue identifiers
         'task_type_index': task_type_index,
+        'task_type_name': clarq_task_name(task_type_index),
         'dialogue_index': dialogue_index,
         'dialogue_slot': dialogue_slot,
 
@@ -333,3 +334,72 @@ def metrics_to_dataframes(metrics: dict[str, Any]) -> tuple[pd.DataFrame, pd.Dat
     summary_df = summary_df[[c for c in summary_cols if c in summary_df.columns]].copy()
 
     return metrics_df, summary_df
+
+
+def task_type_summary_dataframes(
+    metrics_df: pd.DataFrame,
+    *,
+    exclude_from_macro: list[int] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    excluded = sorted({int(x) for x in (exclude_from_macro or [])})
+    excluded_label = ','.join(str(x) for x in excluded)
+    columns = [
+        'task_type_index',
+        'task_type_name',
+        'success_rate',
+        'step_recall',
+        'ClarQ_count',
+        'ClarQ_rate',
+        'Goodbye_rate',
+        'dialogue_present_rate',
+        'num_dialogues',
+    ]
+    if metrics_df.empty:
+        return pd.DataFrame(columns=columns), pd.DataFrame(
+            [
+                {
+                    'num_task_types': 0,
+                    'excluded_task_type_indices': excluded_label,
+                    'macro_success_rate': 0.0,
+                    'macro_step_recall': 0.0,
+                    'macro_ClarQ_count': 0.0,
+                    'macro_ClarQ_rate': 0.0,
+                    'macro_Goodbye_rate': 0.0,
+                    'macro_dialogue_present_rate': 0.0,
+                }
+            ]
+        )
+
+    task_df = (
+        metrics_df.groupby(['task_type_index', 'task_type_name'], as_index=False)
+        .agg(
+            success_rate=('success', 'mean'),
+            step_recall=('step_recall', 'mean'),
+            ClarQ_count=('ClarQ_count', 'mean'),
+            ClarQ_rate=('ClarQ_rate', 'mean'),
+            Goodbye_rate=('Goodbye', 'mean'),
+            dialogue_present_rate=('dialogue_present', 'mean'),
+            num_dialogues=('dialogue_index', 'count')
+            if 'dialogue_index' in metrics_df.columns
+            else ('success', 'count'),
+        )
+        .sort_values('task_type_index')
+        .reset_index(drop=True)
+    )
+
+    macro_source = task_df.loc[~task_df['task_type_index'].isin(excluded)].copy()
+    macro_df = pd.DataFrame(
+        [
+            {
+                'num_task_types': len(macro_source),
+                'excluded_task_type_indices': excluded_label,
+                'macro_success_rate': macro_source['success_rate'].mean(),
+                'macro_step_recall': macro_source['step_recall'].mean(),
+                'macro_ClarQ_count': macro_source['ClarQ_count'].mean(),
+                'macro_ClarQ_rate': macro_source['ClarQ_rate'].mean(),
+                'macro_Goodbye_rate': macro_source['Goodbye_rate'].mean(),
+                'macro_dialogue_present_rate': macro_source['dialogue_present_rate'].mean(),
+            }
+        ]
+    )
+    return task_df[columns], macro_df
