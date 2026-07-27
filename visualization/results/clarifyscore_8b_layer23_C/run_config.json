@@ -1,0 +1,72 @@
+{
+  "experiment_name": "visualize_clarifyscore_8b_layer23_C",
+  "selected_features": [
+    83723,
+    93827,
+    48379,
+    8780,
+    125507
+  ],
+  "n_examples": 31,
+  "config": {
+    "experiment_name": "visualize_clarifyscore_8b_layer23_C",
+    "seed": 42,
+    "model": {
+      "name": "unsloth/Llama-3.1-8B-Instruct",
+      "backend": "hf",
+      "torch_dtype": "bfloat16",
+      "device_map": "auto"
+    },
+    "clarify_visualization": {
+      "loader": "dictionary_learning",
+      "sae_repo": "andyrdt/saes-llama-3.1-8b-instruct",
+      "sae_file": "resid_post_layer_23/trainer_1",
+      "hookpoint": "model.layers.23",
+      "module_path": "model.layers.23",
+      "vocab_path": "data/vocabs/clarifying_vocab.json",
+      "feature_source": {
+        "mode": "from_csv",
+        "path": "visualization/data/cds2_8b_1b_new_experiments/discovery/llama31_8b_instruct_vocab_discovery_layer23resid/C/feature_scores.csv",
+        "score_column": "score",
+        "top_n": 5
+      },
+      "text_source": {
+        "mode": "discovery_parquet",
+        "path": "data/processed/lmsys_llama31_8b_tokenized/train.parquet",
+        "token_column": "tokens",
+        "text_column": "text",
+        "max_rows": 4096,
+        "max_marker_candidate_examples": 200,
+        "max_background_candidate_examples": 30,
+        "cleaning": {
+          "enabled": true,
+          "min_chars": 20,
+          "max_chars": 3000,
+          "reject_patterns": [
+            "(?i)\\b(sex|sexual|porn|nude|naked|xxx|fetish|erotic)\\b",
+            "(?i)\\b(fuck|shit|bitch|dick|pussy|cock|heroin)\\b",
+            "(?i)\\b(kill|murder|suicide|self-harm|rape|incest)\\b",
+            "<\\|reserved_special_token"
+          ]
+        }
+      },
+      "scoring": {
+        "expand_range": [
+          0,
+          0
+        ],
+        "ignore_special_tokens": true,
+        "ignore_token_ids": [],
+        "heatmap_clip_percentile": 95.0,
+        "local_background_window": 12
+      },
+      "plotting": {
+        "crop_window_left": 12,
+        "crop_window_right": 12,
+        "max_examples_per_feature": 10,
+        "rank_examples_by": "marker_minus_background"
+      },
+      "output_dir": "visualization/results/clarifyscore_8b_layer23_C"
+    }
+  }
+}

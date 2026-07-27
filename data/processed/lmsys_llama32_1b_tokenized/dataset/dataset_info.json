@@ -1,0 +1,31 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "conversation_id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "model": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "language": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "text": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "tokens": {
+      "feature": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "_type": "List"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}
