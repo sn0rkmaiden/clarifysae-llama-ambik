@@ -60,3 +60,20 @@ done
 
 Run the four model pairs independently when separate GPUs are available. Do
 not change features or strengths after inspecting task types 1-5.
+
+## Post-hoc Llama-8B strength sensitivity
+
+After observing repetition and turn-cap termination at the frozen primary
+strength of 10, run the same layer-27 feature 62124 at strengths 3 and 5:
+
+```bash
+python -m clarifysae_llama.runners.run_clarq_eval \
+  --config configs/final/clarq/llama8b_clarifysae_f62124_a3_eval1to5.yaml
+
+python -m clarifysae_llama.runners.run_clarq_eval \
+  --config configs/final/clarq/llama8b_clarifysae_f62124_a5_eval1to5.yaml
+```
+
+These configs evaluate only task types 1-5. Treat them as post-hoc
+dose-response diagnostics, not replacements for the frozen strength-10
+held-out result. Report all tested strengths together.

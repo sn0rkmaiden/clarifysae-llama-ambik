@@ -56,6 +56,8 @@ MATCHED_SECTIONS = (
     'judge_prompting',
 )
 
+LLAMA8B_SENSITIVITY_STRENGTHS = (3.0, 5.0)
+
 
 def build_pair(model_key: str, specification: dict[str, Any]) -> tuple[dict, dict]:
     base = load_yaml(ROOT / specification['base'])
@@ -96,7 +98,25 @@ def main() -> None:
         baseline, steered = build_pair(model_key, specification)
         dump_yaml(OUTPUT_DIR / f'{model_key}_baseline_eval0to5.yaml', baseline)
         dump_yaml(OUTPUT_DIR / f'{model_key}_clarifysae_eval0to5.yaml', steered)
-    print(f'Wrote {len(FINAL_CONFIGS) * 2} configs to {OUTPUT_DIR}')
+
+    _, llama8b_primary = build_pair('llama8b', FINAL_CONFIGS['llama8b'])
+    for strength in LLAMA8B_SENSITIVITY_STRENGTHS:
+        sensitivity = copy.deepcopy(llama8b_primary)
+        strength_slug = int(strength)
+        sensitivity['experiment_name'] = (
+            f'clarq_eval1to5_llama8b_f62124_a{strength_slug}_sensitivity_v1'
+        )
+        sensitivity['clarq']['evaluation_set'] = '1-5'
+        sensitivity['clarq']['exclude_task_types_from_macro'] = []
+        sensitivity['steering']['strength'] = strength
+        dump_yaml(
+            OUTPUT_DIR
+            / f'llama8b_clarifysae_f62124_a{strength_slug}_eval1to5.yaml',
+            sensitivity,
+        )
+
+    total = len(FINAL_CONFIGS) * 2 + len(LLAMA8B_SENSITIVITY_STRENGTHS)
+    print(f'Wrote {total} configs to {OUTPUT_DIR}')
 
 
 if __name__ == '__main__':

@@ -211,3 +211,32 @@ def test_final_clarq_config_pairs_are_matched(
         "judge_prompting",
     ):
         assert baseline[key] == steered[key], f"{model_key}: mismatched {key}"
+
+
+@pytest.mark.parametrize("strength", [3.0, 5.0])
+def test_llama8b_strength_sensitivity_configs_only_change_declared_fields(
+    strength: float,
+) -> None:
+    repo = Path(__file__).parents[1]
+    primary = _load_config(repo, "llama8b_clarifysae_eval0to5.yaml")
+    sensitivity = _load_config(
+        repo,
+        f"llama8b_clarifysae_f62124_a{int(strength)}_eval1to5.yaml",
+    )
+
+    assert sensitivity["experiment_name"] == (
+        f"clarq_eval1to5_llama8b_f62124_a{int(strength)}_sensitivity_v1"
+    )
+    assert sensitivity["clarq"]["evaluation_set"] == "1-5"
+    assert sensitivity["clarq"]["exclude_task_types_from_macro"] == []
+    assert sensitivity["steering"]["feature_indices"] == [62124]
+    assert sensitivity["steering"]["strength"] == strength
+    assert sensitivity["output"]["root_dir"] == "outputs/clarq_reviewer_eval_v1"
+
+    for config in (primary, sensitivity):
+        config.pop("experiment_name")
+        config["clarq"].pop("evaluation_set")
+        config["clarq"].pop("exclude_task_types_from_macro")
+        config["steering"].pop("strength")
+
+    assert sensitivity == primary
